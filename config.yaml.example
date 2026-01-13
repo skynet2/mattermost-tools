@@ -1,0 +1,83 @@
+# GitHub personal access token (can also be set via GITHUB_TOKEN env var)
+github_token: "ghp_xxxxxxxxxxxxxxxxxxxx"
+
+# GitHub organization to fetch PRs from
+org: "your-org"
+
+# Repositories to ignore (applies to all commands: prs, changes, reviews)
+ignore_repos:
+  - archived-repo
+  - internal-docs
+  - deprecated-service
+
+# PRs command settings
+prs:
+  # Mattermost incoming webhook URL (can also be set via MATTERMOST_WEBHOOK_URL env var or --webhook-url flag)
+  webhook_url: "https://mattermost.example.com/hooks/xxxxxxxxxxxx"
+
+# Serve command settings (for slash command server)
+serve:
+  # Port to listen on (can also be set via --port flag, default: 8080)
+  port: 8080
+
+  # Mattermost bot settings (required for /changes command and async responses)
+  # Create a bot at: Integrations > Bot Accounts > Add Bot Account
+  mattermost_url: "https://mattermost.example.com"
+  mattermost_token: "your-bot-token"
+
+  # Tokens for authentication (from slash commands and outgoing webhooks)
+  # Each integration in Mattermost has a unique token (shown when you create it)
+  # Add all your tokens here to validate requests
+  # If empty, no token validation is performed (not recommended for production)
+  allowed_tokens:
+    - "token-from-summarize-pr-command"
+    - "token-from-reviews-command"
+    - "token-from-changes-command"
+    - "token-from-outgoing-webhook"
+
+  # Dashboard settings (optional - for web UI)
+  dashboard:
+    enabled: true
+    base_url: "https://releases.example.com"
+    sqlite_path: "./releases.db"
+
+    # Keycloak OIDC settings
+    keycloak:
+      issuer: "https://keycloak.example.com/realms/myrealm"
+      client_id: "mmtools-dashboard"
+      client_secret: "your-client-secret"
+      redirect_url: "https://releases.example.com/auth/callback"
+
+  # Per-command permissions (optional)
+  # If a command is listed here, only the specified users can use it
+  # If a command is not listed, all users can use it
+  command_permissions:
+    changes:
+      - admin
+      - devops-user
+    # reviews: not listed, so all users can use it
+    # summarize-pr: not listed, so all users can use it
+
+  # Release playbook settings
+  release:
+    # Mattermost Team ID (find in System Console or via API)
+    team_id: "your-team-id"
+    # Playbook ID (create a playbook in Mattermost UI, copy ID from URL)
+    playbook_id: "your-playbook-id"
+    # Default reviewers to invite (Mattermost usernames)
+    default_reviewers:
+      - reviewer1
+      - reviewer2
+    # Default QA to invite (Mattermost usernames)
+    default_qa:
+      - qa1
+
+# Bot Mentions (via WebSocket - works in all channels including private/DMs)
+# The bot automatically connects via WebSocket and listens for @mentions.
+# No additional setup required beyond the bot token above.
+#
+# Usage examples (just @mention the bot):
+#   @botname help
+#   @botname reviews
+#   @botname changes uat master
+#   @botname summarize-pr https://github.com/org/repo/pull/123

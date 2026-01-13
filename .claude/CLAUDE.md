@@ -24,22 +24,38 @@ CLI tool using Cobra for command structure. Three layers:
 ```
 cmd/mmtools/main.go            # Entry point
 internal/commands/             # Cobra commands (private)
-    cmd.go                     # Root command, global flags, factory functions
-    completion/                # Shell completion generator
+    cmd.go                     # Root command
+    prs/                       # PR review reminders
+        prs.go                 # Command implementation
+        mappings.go            # GitHub → Mattermost user map
+        formatter.go           # Message formatting
 pkg/                           # Reusable API clients
-    mattermost/                # Mattermost REST API client
+    github/                    # GitHub REST API client
+        client.go              # HTTP client with ListRepositories, ListPullRequests
+        types.go               # Repository, PullRequest, User types
+    mattermost/                # Mattermost webhook client
+        webhook.go             # Webhook posting
 ```
 
-## Mattermost Authentication
+## Commands
 
-Use Mattermost Personal Access Token or session token for API authentication:
+### prs
 
-```go
-client := mattermost.NewClient(
-    os.Getenv("MATTERMOST_URL"),
-    os.Getenv("MATTERMOST_TOKEN"),
-)
+Post pending PR review reminders to Mattermost.
+
+```bash
+mmtools prs <org> [flags]
+
+# Examples
+mmtools prs MyOrg --dry-run
+mmtools prs MyOrg --ignore-repos=archived-repo,internal-docs
+mmtools prs MyOrg --webhook-url=https://mattermost.example.com/hooks/xxx
 ```
+
+**Flags:**
+- `--webhook-url` - Mattermost webhook URL (overrides MATTERMOST_WEBHOOK_URL)
+- `--ignore-repos` - Comma-separated list of repos to ignore
+- `--dry-run` - Print message to stdout instead of posting
 
 ## Adding a New Command
 
@@ -164,8 +180,8 @@ make build
 
 | Variable | Command | Description |
 |----------|---------|-------------|
-| `MATTERMOST_URL` | all | Mattermost server URL |
-| `MATTERMOST_TOKEN` | all | Mattermost Personal Access Token |
+| `GITHUB_TOKEN` | prs | GitHub Personal Access Token (required) |
+| `MATTERMOST_WEBHOOK_URL` | prs | Mattermost incoming webhook URL |
 
 ## Watch Mode Pattern
 

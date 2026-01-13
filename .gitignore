@@ -1,6 +1,10 @@
 # Build output
 bin/
 
+# Environment
+.env
+config.yaml
+
 # IDE
 .idea/
 .vscode/
