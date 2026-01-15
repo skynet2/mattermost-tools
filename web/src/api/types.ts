@@ -27,6 +27,7 @@ export interface ReleaseRepo {
   Contributors: string
   PRNumber: number
   PRURL: string
+  PRMerged: boolean
   Excluded: boolean
   DependsOn: string
   DeployOrder: number
@@ -35,6 +36,7 @@ export interface ReleaseRepo {
   ConfirmedBy: string
   ConfirmedAt: number
   InfraChanges: string
+  MergeCommitSHA: string
 }
 
 export interface ReleaseWithRepos {
@@ -76,6 +78,7 @@ export interface CIStatus {
   status: string
   run_number: number
   run_url: string
+  chart_name: string
   chart_version: string
   started_at: number
   completed_at: number

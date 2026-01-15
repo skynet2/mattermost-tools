@@ -77,6 +77,11 @@ export const releaseApi = {
   getCIStatus: async (id: string): Promise<CIStatusResponse> => {
     const { data } = await api.get(`/releases/${id}/ci-status`)
     return data
+  },
+
+  refreshChartVersion: async (releaseId: string, repoId: number): Promise<{ chart_version: string }> => {
+    const { data } = await api.post(`/releases/${releaseId}/repos/${repoId}/refresh-chart-version`)
+    return data
   }
 }
 

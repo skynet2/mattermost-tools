@@ -53,6 +53,7 @@ type RepoData struct {
 	Contributors   []string
 	PRNumber       int
 	PRURL          string
+	PRMerged       bool
 	Summary        string
 	IsBreaking     bool
 	InfraChanges   []string
@@ -108,6 +109,7 @@ func (s *Service) AddRepos(ctx context.Context, releaseID string, repos []RepoDa
 			Deletions:      r.Deletions,
 			PRNumber:       r.PRNumber,
 			PRURL:          r.PRURL,
+			PRMerged:       r.PRMerged,
 			Summary:        r.Summary,
 			IsBreaking:     r.IsBreaking,
 			MergeCommitSHA: r.MergeCommitSHA,
@@ -257,79 +259,82 @@ func (s *Service) SetMattermostPostID(ctx context.Context, id, postID string) er
 	return s.db.WithContext(ctx).Model(&database.Release{}).Where("id = ?", id).Update("mattermost_post_id", postID).Error
 }
 
-type repoPreservedData struct {
-	ConfirmedBy string
-	ConfirmedAt int64
-	Excluded    bool
-	DependsOn   string
-	HeadSHA     string
-	Summary     string
-	IsBreaking  bool
-}
-
 func (s *Service) RefreshRepos(ctx context.Context, releaseID string, repos []RepoData) error {
 	var existingRepos []database.ReleaseRepo
 	if err := s.db.WithContext(ctx).Where("release_id = ?", releaseID).Find(&existingRepos).Error; err != nil {
 		return fmt.Errorf("fetching existing repos: %w", err)
 	}
 
-	preservedData := make(map[string]repoPreservedData)
-	for _, repo := range existingRepos {
-		preservedData[repo.RepoName] = repoPreservedData{
-			ConfirmedBy: repo.ConfirmedBy,
-			ConfirmedAt: repo.ConfirmedAt,
-			Excluded:    repo.Excluded,
-			DependsOn:   repo.DependsOn,
-			HeadSHA:     repo.HeadSHA,
-			Summary:     repo.Summary,
-			IsBreaking:  repo.IsBreaking,
-		}
+	existingByName := make(map[string]*database.ReleaseRepo)
+	for i := range existingRepos {
+		existingByName[existingRepos[i].RepoName] = &existingRepos[i]
 	}
 
-	if err := s.db.WithContext(ctx).Where("release_id = ?", releaseID).Delete(&database.ReleaseRepo{}).Error; err != nil {
-		return fmt.Errorf("deleting old repos: %w", err)
-	}
-
+	incomingNames := make(map[string]bool)
 	for _, r := range repos {
+		incomingNames[r.RepoName] = true
+
+		existing := existingByName[r.RepoName]
+
 		summary := r.Summary
 		isBreaking := r.IsBreaking
+		if existing != nil && existing.HeadSHA != "" && existing.HeadSHA == r.HeadSHA && existing.Summary != "" {
+			summary = existing.Summary
+			isBreaking = existing.IsBreaking
+		}
 
-		if preserved, exists := preservedData[r.RepoName]; exists {
-			if preserved.HeadSHA != "" && preserved.HeadSHA == r.HeadSHA && preserved.Summary != "" {
-				summary = preserved.Summary
-				isBreaking = preserved.IsBreaking
+		contributorsJSON, _ := json.Marshal(r.Contributors)
+		infraChangesJSON, _ := json.Marshal(r.InfraChanges)
+
+		if existing != nil {
+			updates := map[string]interface{}{
+				"commit_count":     r.CommitCount,
+				"additions":        r.Additions,
+				"deletions":        r.Deletions,
+				"pr_number":        r.PRNumber,
+				"pr_url":           r.PRURL,
+				"pr_merged":        r.PRMerged,
+				"summary":          summary,
+				"is_breaking":      isBreaking,
+				"merge_commit_sha": r.MergeCommitSHA,
+				"head_sha":         r.HeadSHA,
+				"contributors":     string(contributorsJSON),
+				"infra_changes":    string(infraChangesJSON),
+			}
+			if err := s.db.WithContext(ctx).Model(&database.ReleaseRepo{}).Where("id = ?", existing.ID).Updates(updates).Error; err != nil {
+				return fmt.Errorf("updating repo %s: %w", r.RepoName, err)
+			}
+		} else {
+			repo := database.ReleaseRepo{
+				ReleaseID:      releaseID,
+				RepoName:       r.RepoName,
+				CommitCount:    r.CommitCount,
+				Additions:      r.Additions,
+				Deletions:      r.Deletions,
+				PRNumber:       r.PRNumber,
+				PRURL:          r.PRURL,
+				PRMerged:       r.PRMerged,
+				Summary:        summary,
+				IsBreaking:     isBreaking,
+				MergeCommitSHA: r.MergeCommitSHA,
+				HeadSHA:        r.HeadSHA,
+				Contributors:   string(contributorsJSON),
+				InfraChanges:   string(infraChangesJSON),
+			}
+			if err := s.db.WithContext(ctx).Create(&repo).Error; err != nil {
+				return fmt.Errorf("creating repo %s: %w", r.RepoName, err)
 			}
 		}
+	}
 
-		repo := database.ReleaseRepo{
-			ReleaseID:      releaseID,
-			RepoName:       r.RepoName,
-			CommitCount:    r.CommitCount,
-			Additions:      r.Additions,
-			Deletions:      r.Deletions,
-			PRNumber:       r.PRNumber,
-			PRURL:          r.PRURL,
-			Summary:        summary,
-			IsBreaking:     isBreaking,
-			MergeCommitSHA: r.MergeCommitSHA,
-			HeadSHA:        r.HeadSHA,
-		}
-		if err := repo.SetContributors(r.Contributors); err != nil {
-			return fmt.Errorf("setting contributors: %w", err)
-		}
-		if err := repo.SetInfraChanges(r.InfraChanges); err != nil {
-			return fmt.Errorf("setting infra changes: %w", err)
-		}
-
-		if preserved, exists := preservedData[r.RepoName]; exists {
-			repo.ConfirmedBy = preserved.ConfirmedBy
-			repo.ConfirmedAt = preserved.ConfirmedAt
-			repo.Excluded = preserved.Excluded
-			repo.DependsOn = preserved.DependsOn
-		}
-
-		if err := s.db.WithContext(ctx).Create(&repo).Error; err != nil {
-			return fmt.Errorf("adding repo %s: %w", r.RepoName, err)
+	for _, existing := range existingRepos {
+		if !incomingNames[existing.RepoName] {
+			if err := s.db.WithContext(ctx).Where("release_repo_id = ?", existing.ID).Delete(&database.RepoCIStatus{}).Error; err != nil {
+				return fmt.Errorf("deleting CI status for removed repo %s: %w", existing.RepoName, err)
+			}
+			if err := s.db.WithContext(ctx).Delete(&existing).Error; err != nil {
+				return fmt.Errorf("deleting removed repo %s: %w", existing.RepoName, err)
+			}
 		}
 	}
 
@@ -657,7 +662,8 @@ func (s *Service) GetCIStatusByRepoID(ctx context.Context, releaseRepoID uint) (
 func (s *Service) GetIncompleteCIStatuses(ctx context.Context) ([]database.RepoCIStatus, error) {
 	var statuses []database.RepoCIStatus
 	err := s.db.WithContext(ctx).
-		Where("status NOT IN ?", []string{"success", "failure", "cancelled", "skipped"}).
+		Joins("INNER JOIN release_repos ON release_repos.id = repo_ci_statuses.release_repo_id").
+		Where("repo_ci_statuses.status NOT IN ?", []string{"success", "failure", "cancelled", "skipped"}).
 		Find(&statuses).Error
 	if err != nil {
 		return nil, fmt.Errorf("fetching incomplete CI statuses: %w", err)

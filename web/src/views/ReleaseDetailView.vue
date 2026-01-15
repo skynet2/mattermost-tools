@@ -35,6 +35,7 @@ let syncInterval: ReturnType<typeof setInterval> | null = null
 const ciStatuses = ref<Map<number, CIStatus>>(new Map())
 const ciLoading = ref(false)
 const anyInProgress = ref(false)
+const refreshingChartVersion = ref<number | null>(null)
 let ciRefreshTimeout: ReturnType<typeof setTimeout> | null = null
 
 const releaseId = computed(() => route.params.id as string)
@@ -440,6 +441,22 @@ async function loadCIStatus() {
     anyInProgress.value = false
   } finally {
     ciLoading.value = false
+  }
+}
+
+async function refreshChartVersion(repoId: number) {
+  refreshingChartVersion.value = repoId
+  try {
+    const result = await releaseApi.refreshChartVersion(releaseId.value, repoId)
+    const status = ciStatuses.value.get(repoId)
+    if (status) {
+      status.chart_version = result.chart_version
+      ciStatuses.value = new Map(ciStatuses.value)
+    }
+  } catch (error: any) {
+    alert(error.response?.data || 'Failed to refresh chart version')
+  } finally {
+    refreshingChartVersion.value = null
   }
 }
 
@@ -1057,14 +1074,29 @@ onUnmounted(() => {
               <p v-else class="text-gray-400">No summary available</p>
             </td>
             <td class="px-6 py-4 whitespace-nowrap text-sm">
-              <a
-                v-if="repo.PRURL"
-                :href="repo.PRURL"
-                target="_blank"
-                class="text-indigo-600 hover:text-indigo-800"
-              >
-                #{{ repo.PRNumber }}
-              </a>
+              <div v-if="repo.PRURL" class="flex items-center gap-2">
+                <a
+                  :href="repo.PRURL"
+                  target="_blank"
+                  class="text-indigo-600 hover:text-indigo-800"
+                >
+                  #{{ repo.PRNumber }}
+                </a>
+                <span
+                  v-if="repo.PRMerged"
+                  class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800"
+                  title="PR is merged"
+                >
+                  Merged
+                </span>
+                <span
+                  v-else
+                  class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800"
+                  title="PR is open"
+                >
+                  Open
+                </span>
+              </div>
               <a
                 v-else
                 :href="getCompareUrl(repo)"
@@ -1237,10 +1269,23 @@ onUnmounted(() => {
               <span v-else class="text-gray-400">-</span>
             </td>
             <td class="px-6 py-4 whitespace-nowrap text-sm">
-              <span v-if="ciStatuses.get(repo.ID)?.chart_version" class="text-gray-900 font-mono">
-                {{ ciStatuses.get(repo.ID)!.chart_version }}
-              </span>
-              <span v-else class="text-gray-400">-</span>
+              <div class="flex items-center gap-2">
+                <span v-if="ciStatuses.get(repo.ID)?.chart_version" class="text-gray-900 font-mono">
+                  {{ ciStatuses.get(repo.ID)!.chart_version }}
+                </span>
+                <span v-else class="text-gray-400">-</span>
+                <button
+                  v-if="ciStatuses.get(repo.ID)?.status === 'success' && !ciStatuses.get(repo.ID)?.chart_version"
+                  @click="refreshChartVersion(repo.ID)"
+                  :disabled="refreshingChartVersion === repo.ID"
+                  class="inline-flex items-center p-1 text-gray-400 hover:text-indigo-600 disabled:opacity-50"
+                  title="Parse chart version from job logs"
+                >
+                  <svg class="w-4 h-4" :class="{ 'animate-spin': refreshingChartVersion === repo.ID }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                </button>
+              </div>
             </td>
             <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
               {{ ciStatuses.get(repo.ID) ? formatCITime(ciStatuses.get(repo.ID)!.completed_at) : '-' }}

@@ -160,6 +160,8 @@ func (s *Server) handleRelease(w http.ResponseWriter, r *http.Request) {
 				s.handlers.PokeParticipants(w, r)
 			} else if len(parts) > 3 && parts[1] == "repos" && parts[3] == "confirm" {
 				s.handlers.ConfirmRepo(w, r)
+			} else if len(parts) > 3 && parts[1] == "repos" && parts[3] == "refresh-chart-version" {
+				s.handlers.RefreshChartVersion(w, r)
 			}
 		case http.MethodDelete:
 			if len(parts) > 1 && parts[1] == "approve" {

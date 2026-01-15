@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"github.com/user/mattermost-tools/internal/database"
+	"github.com/user/mattermost-tools/internal/logger"
 	"github.com/user/mattermost-tools/pkg/github"
 	"github.com/user/mattermost-tools/pkg/mattermost"
 )
@@ -401,6 +402,7 @@ func (h *Handlers) RefreshRelease(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.ciTracker != nil {
+		h.ciTracker.InvalidateCache(releaseID)
 		h.ciTracker.InitCITracking(ctx, releaseID)
 	}
 
@@ -515,8 +517,26 @@ func (h *Handlers) gatherRepoDataWithExisting(ctx context.Context, sourceBranch,
 			}
 
 			var mergeCommitSHA string
-			if pr != nil && pr.Merged && pr.MergeCommitSHA != "" {
-				mergeCommitSHA = pr.MergeCommitSHA
+			var prMerged bool
+			if pr != nil {
+				log := logger.Get()
+				log.Info().
+					Str("repo", repo.Name).
+					Int("pr_number", pr.Number).
+					Bool("merged", pr.Merged).
+					Str("state", pr.State).
+					Str("merge_commit_sha", pr.MergeCommitSHA).
+					Time("merged_at", pr.MergedAt).
+					Msg("Found PR for repo")
+				prMerged = pr.Merged || pr.State == "closed"
+				if pr.MergeCommitSHA != "" {
+					mergeCommitSHA = pr.MergeCommitSHA
+				}
+			} else {
+				log := logger.Get()
+				log.Warn().
+					Str("repo", repo.Name).
+					Msg("No PR found for repo")
 			}
 
 			data := RepoData{
@@ -530,6 +550,7 @@ func (h *Handlers) gatherRepoDataWithExisting(ctx context.Context, sourceBranch,
 				InfraChanges:   infraChanges,
 				MergeCommitSHA: mergeCommitSHA,
 				HeadSHA:        headSHA,
+				PRMerged:       prMerged,
 			}
 			if pr != nil {
 				data.PRNumber = pr.Number
@@ -971,6 +992,18 @@ func (h *Handlers) GetHistory(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, history)
 }
 
+type CIStatusResponse struct {
+	RepoID       uint   `json:"repo_id"`
+	RepoName     string `json:"repo_name"`
+	Status       string `json:"status"`
+	RunNumber    int    `json:"run_number"`
+	RunURL       string `json:"run_url"`
+	ChartName    string `json:"chart_name"`
+	ChartVersion string `json:"chart_version"`
+	StartedAt    int64  `json:"started_at"`
+	CompletedAt  int64  `json:"completed_at"`
+}
+
 func (h *Handlers) GetCIStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -985,11 +1018,88 @@ func (h *Handlers) GetCIStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	releaseID := parts[0]
 
-	statuses, err := h.service.GetCIStatusesForRelease(r.Context(), releaseID)
+	var statuses []database.RepoCIStatus
+	var anyInProgress bool
+	var err error
+
+	if h.ciTracker != nil {
+		statuses, anyInProgress = h.ciTracker.GetCachedCIStatuses(r.Context(), releaseID)
+	} else {
+		statuses, err = h.service.GetCIStatusesForRelease(r.Context(), releaseID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		for _, s := range statuses {
+			if s.Status == "pending" || s.Status == "queued" || s.Status == "in_progress" {
+				anyInProgress = true
+				break
+			}
+		}
+	}
+
+	repos, _ := h.service.GetReposByReleaseID(r.Context(), releaseID)
+	repoNames := make(map[uint]string)
+	for _, repo := range repos {
+		repoNames[repo.ID] = repo.RepoName
+	}
+
+	responseStatuses := make([]CIStatusResponse, 0, len(statuses))
+	for _, s := range statuses {
+		responseStatuses = append(responseStatuses, CIStatusResponse{
+			RepoID:       s.ReleaseRepoID,
+			RepoName:     repoNames[s.ReleaseRepoID],
+			Status:       s.Status,
+			RunNumber:    s.WorkflowRunNum,
+			RunURL:       s.WorkflowURL,
+			ChartName:    s.ChartName,
+			ChartVersion: s.ChartVersion,
+			StartedAt:    s.StartedAt,
+			CompletedAt:  s.CompletedAt,
+		})
+	}
+
+	respondJSON(w, map[string]interface{}{
+		"statuses":        responseStatuses,
+		"any_in_progress": anyInProgress,
+	})
+}
+
+func (h *Handlers) RefreshChartVersion(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	parts := strings.Split(r.URL.Path, "/")
+	if len(parts) < 6 {
+		http.Error(w, "Invalid path", http.StatusBadRequest)
+		return
+	}
+	repoIDStr := parts[len(parts)-2]
+	releaseID := parts[len(parts)-4]
+
+	repoID, err := strconv.ParseUint(repoIDStr, 10, 32)
+	if err != nil {
+		http.Error(w, "invalid repo id", http.StatusBadRequest)
+		return
+	}
+
+	if h.ciTracker == nil {
+		http.Error(w, "CI tracker not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	chartName, chartVersion, err := h.ciTracker.RefreshChartInfo(r.Context(), uint(repoID))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	respondJSON(w, statuses)
+	h.ciTracker.InvalidateCache(releaseID)
+
+	respondJSON(w, map[string]string{
+		"chart_name":    chartName,
+		"chart_version": chartVersion,
+	})
 }

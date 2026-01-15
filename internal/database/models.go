@@ -35,7 +35,8 @@ type ReleaseRepo struct {
 	Contributors   string
 	PRNumber       int
 	PRURL          string
-	Excluded       bool   `gorm:"default:false"`
+	PRMerged       bool `gorm:"default:false"`
+	Excluded       bool `gorm:"default:false"`
 	DependsOn      string
 	Summary        string
 	IsBreaking     bool `gorm:"default:false"`
@@ -151,6 +152,7 @@ type RepoCIStatus struct {
 	WorkflowRunNum int
 	WorkflowURL    string
 	Status         string `gorm:"default:pending"`
+	ChartName      string
 	ChartVersion   string
 	MergeCommitSHA string
 	StartedAt      int64

@@ -77,6 +77,7 @@ type FileChange struct {
 type WorkflowRun struct {
 	ID           int64     `json:"id"`
 	Name         string    `json:"name"`
+	Path         string    `json:"path"`
 	RunNumber    int       `json:"run_number"`
 	Status       string    `json:"status"`
 	Conclusion   string    `json:"conclusion"`
