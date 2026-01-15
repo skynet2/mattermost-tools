@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { Release, ReleaseWithRepos, UserInfo, UserProfile, HistoryEntry, CreateReleaseResponse } from './types'
+import type { Release, ReleaseWithRepos, UserInfo, UserProfile, HistoryEntry, CreateReleaseResponse, CIStatusResponse } from './types'
 
 const api = axios.create({
   baseURL: '/api',
@@ -71,6 +71,11 @@ export const releaseApi = {
 
   getHistory: async (id: string): Promise<HistoryEntry[]> => {
     const { data } = await api.get(`/releases/${id}/history`)
+    return data
+  },
+
+  getCIStatus: async (id: string): Promise<CIStatusResponse> => {
+    const { data } = await api.get(`/releases/${id}/ci-status`)
     return data
   }
 }

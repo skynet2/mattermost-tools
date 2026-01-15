@@ -174,6 +174,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	var ciTracker *dashboard.CITracker
 	if dashboardServer != nil && mmBot != nil {
 		baseURL := cfg.Serve.Dashboard.BaseURL
 		dashboardServer.Service().SetFullApprovalCallback(func(rel *database.Release) {
@@ -183,6 +184,13 @@ func runServe(cmd *cobra.Command, args []string) error {
 				baseURL, rel.ID)
 			mmBot.PostMessage(context.Background(), rel.ChannelID, message)
 		})
+	}
+
+	if dashboardServer != nil && ghClient != nil {
+		ciTracker = dashboard.NewCITracker(dashboardServer.Service(), ghClient, org, 30*time.Second)
+		dashboardServer.SetCITracker(ciTracker)
+		ciTracker.Start()
+		log.Info().Msg("CI tracker started")
 	}
 
 	allowedTokens := make(map[string]struct{})
@@ -270,6 +278,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 	<-quit
 
 	log.Info().Msg("Shutting down server")
+	if ciTracker != nil {
+		ciTracker.Stop()
+	}
 	if wsClient != nil {
 		wsClient.Close()
 	}
@@ -1310,14 +1321,26 @@ func gatherRepoData(ctx context.Context, ghClient *github.Client, org string, ig
 
 			summary, isBreaking := generateChangeSummary(repo.Name, compare)
 
+			var mergeCommitSHA string
+			if pr != nil && pr.Merged && pr.MergeCommitSHA != "" {
+				mergeCommitSHA = pr.MergeCommitSHA
+			}
+
+			var headSHA string
+			if len(compare.Commits) > 0 {
+				headSHA = compare.Commits[len(compare.Commits)-1].SHA
+			}
+
 			data := dashboard.RepoData{
-				RepoName:     repo.Name,
-				CommitCount:  compare.TotalCommits,
-				Additions:    additions,
-				Deletions:    deletions,
-				Contributors: contributors,
-				Summary:      summary,
-				IsBreaking:   isBreaking,
+				RepoName:       repo.Name,
+				CommitCount:    compare.TotalCommits,
+				Additions:      additions,
+				Deletions:      deletions,
+				Contributors:   contributors,
+				Summary:        summary,
+				IsBreaking:     isBreaking,
+				MergeCommitSHA: mergeCommitSHA,
+				HeadSHA:        headSHA,
 			}
 			if pr != nil {
 				data.PRNumber = pr.Number

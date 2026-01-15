@@ -25,6 +25,7 @@ type Handlers struct {
 	ignoredRepos map[string]struct{}
 	mmBot        *mattermost.Bot
 	baseURL      string
+	ciTracker    *CITracker
 }
 
 func NewHandlers(service *Service, auth *Auth, ghClient *github.Client, org string, ignoredRepos map[string]struct{}, mmBot *mattermost.Bot, baseURL string) *Handlers {
@@ -37,6 +38,10 @@ func NewHandlers(service *Service, auth *Auth, ghClient *github.Client, org stri
 		mmBot:        mmBot,
 		baseURL:      baseURL,
 	}
+}
+
+func (h *Handlers) SetCITracker(ciTracker *CITracker) {
+	h.ciTracker = ciTracker
 }
 
 func (h *Handlers) ListReleases(w http.ResponseWriter, r *http.Request) {
@@ -95,6 +100,9 @@ func (h *Handlers) CreateRelease(w http.ResponseWriter, r *http.Request) {
 				h.service.RecordHistory(ctx, release.ID, "repos_synced", "system", map[string]any{
 					"count": len(repos),
 				})
+				if h.ciTracker != nil {
+					h.ciTracker.InitCITracking(ctx, release.ID)
+				}
 			}
 		}()
 	}
@@ -134,11 +142,49 @@ func (h *Handlers) GetRelease(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	ciStatuses, _ := h.service.GetCIStatusesForRelease(r.Context(), id)
+	ciSummary := h.buildCISummary(ciStatuses)
+
 	respondJSON(w, map[string]interface{}{
-		"release": release.Release,
-		"repos":   repos,
-		"org":     h.org,
+		"release":   release.Release,
+		"repos":     repos,
+		"org":       h.org,
+		"ciSummary": ciSummary,
 	})
+}
+
+func (h *Handlers) buildCISummary(statuses []database.RepoCIStatus) map[string]interface{} {
+	summary := map[string]interface{}{
+		"total":      len(statuses),
+		"pending":    0,
+		"queued":     0,
+		"inProgress": 0,
+		"success":    0,
+		"failure":    0,
+		"cancelled":  0,
+		"skipped":    0,
+	}
+
+	for _, s := range statuses {
+		switch s.Status {
+		case "pending":
+			summary["pending"] = summary["pending"].(int) + 1
+		case "queued":
+			summary["queued"] = summary["queued"].(int) + 1
+		case "in_progress":
+			summary["inProgress"] = summary["inProgress"].(int) + 1
+		case "success":
+			summary["success"] = summary["success"].(int) + 1
+		case "failure":
+			summary["failure"] = summary["failure"].(int) + 1
+		case "cancelled":
+			summary["cancelled"] = summary["cancelled"].(int) + 1
+		case "skipped":
+			summary["skipped"] = summary["skipped"].(int) + 1
+		}
+	}
+
+	return summary
 }
 
 func (h *Handlers) UpdateRelease(w http.ResponseWriter, r *http.Request) {
@@ -328,13 +374,22 @@ func (h *Handlers) RefreshRelease(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	release, err := h.service.GetRelease(ctx, releaseID)
+	releaseWithRepos, err := h.service.GetReleaseWithRepos(ctx, releaseID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
 
-	repos, err := h.gatherRepoData(ctx, release.SourceBranch, release.DestBranch)
+	existingRepos := make(map[string]existingRepoData)
+	for _, repo := range releaseWithRepos.Repos {
+		existingRepos[repo.RepoName] = existingRepoData{
+			HeadSHA:    repo.HeadSHA,
+			Summary:    repo.Summary,
+			IsBreaking: repo.IsBreaking,
+		}
+	}
+
+	repos, err := h.gatherRepoDataWithExisting(ctx, releaseWithRepos.SourceBranch, releaseWithRepos.DestBranch, existingRepos)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -343,6 +398,10 @@ func (h *Handlers) RefreshRelease(w http.ResponseWriter, r *http.Request) {
 	if err := h.service.RefreshRepos(ctx, releaseID, repos); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	if h.ciTracker != nil {
+		h.ciTracker.InitCITracking(ctx, releaseID)
 	}
 
 	actor := "system"
@@ -377,7 +436,17 @@ func (h *Handlers) DeclineRelease(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, map[string]string{"status": "ok"})
 }
 
+type existingRepoData struct {
+	HeadSHA    string
+	Summary    string
+	IsBreaking bool
+}
+
 func (h *Handlers) gatherRepoData(ctx context.Context, sourceBranch, destBranch string) ([]RepoData, error) {
+	return h.gatherRepoDataWithExisting(ctx, sourceBranch, destBranch, nil)
+}
+
+func (h *Handlers) gatherRepoDataWithExisting(ctx context.Context, sourceBranch, destBranch string, existing map[string]existingRepoData) ([]RepoData, error) {
 	repos, err := h.ghClient.ListRepositories(ctx, h.org)
 	if err != nil {
 		return nil, err
@@ -428,17 +497,39 @@ func (h *Handlers) gatherRepoData(ctx context.Context, sourceBranch, destBranch 
 
 			pr, _ := h.ghClient.FindPullRequest(ctx, h.org, repo.Name, sourceBranch, destBranch)
 
-			summary, isBreaking := generateChangeSummary(repo.Name, compare)
+			var headSHA string
+			if len(compare.Commits) > 0 {
+				headSHA = compare.Commits[len(compare.Commits)-1].SHA
+			}
+
+			var summary string
+			var isBreaking bool
+			if existing != nil {
+				if ex, ok := existing[repo.Name]; ok && ex.HeadSHA == headSHA && ex.Summary != "" {
+					summary = ex.Summary
+					isBreaking = ex.IsBreaking
+				}
+			}
+			if summary == "" {
+				summary, isBreaking = generateChangeSummary(repo.Name, compare)
+			}
+
+			var mergeCommitSHA string
+			if pr != nil && pr.Merged && pr.MergeCommitSHA != "" {
+				mergeCommitSHA = pr.MergeCommitSHA
+			}
 
 			data := RepoData{
-				RepoName:     repo.Name,
-				CommitCount:  compare.TotalCommits,
-				Additions:    additions,
-				Deletions:    deletions,
-				Contributors: contributors,
-				Summary:      summary,
-				IsBreaking:   isBreaking,
-				InfraChanges: infraChanges,
+				RepoName:       repo.Name,
+				CommitCount:    compare.TotalCommits,
+				Additions:      additions,
+				Deletions:      deletions,
+				Contributors:   contributors,
+				Summary:        summary,
+				IsBreaking:     isBreaking,
+				InfraChanges:   infraChanges,
+				MergeCommitSHA: mergeCommitSHA,
+				HeadSHA:        headSHA,
 			}
 			if pr != nil {
 				data.PRNumber = pr.Number
@@ -878,4 +969,27 @@ func (h *Handlers) GetHistory(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondJSON(w, history)
+}
+
+func (h *Handlers) GetCIStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	path := strings.TrimPrefix(r.URL.Path, "/api/releases/")
+	parts := strings.Split(path, "/")
+	if len(parts) < 2 {
+		http.Error(w, "Invalid path", http.StatusBadRequest)
+		return
+	}
+	releaseID := parts[0]
+
+	statuses, err := h.service.GetCIStatusesForRelease(r.Context(), releaseID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	respondJSON(w, statuses)
 }

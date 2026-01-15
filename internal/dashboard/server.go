@@ -138,6 +138,8 @@ func (s *Server) handleRelease(w http.ResponseWriter, r *http.Request) {
 		case http.MethodGet:
 			if len(parts) > 1 && parts[1] == "history" {
 				s.handlers.GetHistory(w, r)
+			} else if len(parts) > 1 && parts[1] == "ci-status" {
+				s.handlers.GetCIStatus(w, r)
 			} else {
 				s.handlers.GetRelease(w, r)
 			}
@@ -179,6 +181,10 @@ func (s *Server) handleRelease(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) Service() *Service {
 	return s.service
+}
+
+func (s *Server) SetCITracker(ciTracker *CITracker) {
+	s.handlers.SetCITracker(ciTracker)
 }
 
 func (s *Server) Handler() http.Handler {

@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { releaseApi, authApi } from '@/api/client'
-import type { Release, ReleaseRepo, HistoryEntry } from '@/api/types'
+import type { Release, ReleaseRepo, HistoryEntry, CIStatus } from '@/api/types'
 
 const route = useRoute()
 const router = useRouter()
@@ -31,6 +31,11 @@ const expandedHistoryEntries = ref<Set<number>>(new Set())
 const openDependencyDropdown = ref<number | null>(null)
 const syncing = ref(false)
 let syncInterval: ReturnType<typeof setInterval> | null = null
+
+const ciStatuses = ref<Map<number, CIStatus>>(new Map())
+const ciLoading = ref(false)
+const anyInProgress = ref(false)
+let ciRefreshTimeout: ReturnType<typeof setTimeout> | null = null
 
 const releaseId = computed(() => route.params.id as string)
 
@@ -416,6 +421,87 @@ function toggleHistoryEntry(entryId: number) {
   expandedHistoryEntries.value = new Set(expandedHistoryEntries.value)
 }
 
+async function loadCIStatus() {
+  ciLoading.value = true
+  try {
+    const response = await releaseApi.getCIStatus(releaseId.value)
+    const statusMap = new Map<number, CIStatus>()
+    for (const status of response.statuses) {
+      statusMap.set(status.repo_id, status)
+    }
+    ciStatuses.value = statusMap
+    anyInProgress.value = response.any_in_progress
+
+    if (response.any_in_progress) {
+      ciRefreshTimeout = setTimeout(loadCIStatus, 10000)
+    }
+  } catch {
+    ciStatuses.value = new Map()
+    anyInProgress.value = false
+  } finally {
+    ciLoading.value = false
+  }
+}
+
+function getCIStatusIcon(status: string): string {
+  switch (status) {
+    case 'success':
+      return '&#10003;'
+    case 'failure':
+      return '&#10007;'
+    case 'in_progress':
+      return '&#9203;'
+    case 'pending':
+      return '&#9711;'
+    default:
+      return '&#8226;'
+  }
+}
+
+function getCIStatusClass(status: string): string {
+  switch (status) {
+    case 'success':
+      return 'text-green-600 bg-green-100'
+    case 'failure':
+      return 'text-red-600 bg-red-100'
+    case 'in_progress':
+      return 'text-yellow-600 bg-yellow-100'
+    case 'pending':
+      return 'text-gray-600 bg-gray-100'
+    default:
+      return 'text-gray-600 bg-gray-100'
+  }
+}
+
+function getCIStatusText(status: string): string {
+  switch (status) {
+    case 'success':
+      return 'Success'
+    case 'failure':
+      return 'Failed'
+    case 'in_progress':
+      return 'In Progress'
+    case 'pending':
+      return 'Pending'
+    default:
+      return status
+  }
+}
+
+function formatCITime(timestamp: number): string {
+  if (!timestamp) return '-'
+  const date = new Date(timestamp * 1000)
+  const now = new Date()
+  const diffMs = now.getTime() - date.getTime()
+  const diffMins = Math.floor(diffMs / 60000)
+  const diffHours = Math.floor(diffMs / 3600000)
+
+  if (diffMins < 1) return 'just now'
+  if (diffMins < 60) return `${diffMins}m ago`
+  if (diffHours < 24) return `${diffHours}h ago`
+  return date.toLocaleDateString()
+}
+
 async function handleConfirmClick(repo: ReleaseRepo) {
   if (!myGitHubUser.value) {
     pendingConfirmRepoId.value = repo.ID
@@ -514,7 +600,7 @@ function handleClickOutside(event: MouseEvent) {
 
 onMounted(async () => {
   document.addEventListener('click', handleClickOutside)
-  await Promise.all([loadRelease(), loadMyGitHub()])
+  await Promise.all([loadRelease(), loadMyGitHub(), loadCIStatus()])
 
   if (route.query.syncing === '1') {
     syncing.value = true
@@ -546,6 +632,10 @@ onUnmounted(() => {
   if (syncInterval) {
     clearInterval(syncInterval)
     syncInterval = null
+  }
+  if (ciRefreshTimeout) {
+    clearTimeout(ciRefreshTimeout)
+    ciRefreshTimeout = null
   }
 })
 </script>
@@ -1071,6 +1161,89 @@ onUnmounted(() => {
               >
                 {{ repo.Excluded ? 'Include' : 'Exclude' }}
               </button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- CI/CD Status Section -->
+    <div class="bg-white shadow-sm rounded-lg ring-1 ring-gray-200 overflow-hidden">
+      <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+        <div class="flex items-center">
+          <svg class="w-5 h-5 text-gray-400 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+          </svg>
+          <h2 class="text-lg font-medium text-gray-900">CI/CD Status</h2>
+          <span v-if="anyInProgress" class="ml-3 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800">
+            <span class="animate-pulse mr-1">&#9679;</span> Auto-refreshing
+          </span>
+        </div>
+        <button
+          @click="loadCIStatus"
+          :disabled="ciLoading"
+          class="inline-flex items-center px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded disabled:opacity-50"
+        >
+          <svg class="w-4 h-4 mr-1" :class="{ 'animate-spin': ciLoading }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+          Refresh
+        </button>
+      </div>
+
+      <div v-if="ciLoading && ciStatuses.size === 0" class="flex items-center justify-center py-8">
+        <div class="animate-spin rounded-full h-6 w-6 border-b-2 border-indigo-600"></div>
+      </div>
+
+      <div v-else-if="ciStatuses.size === 0" class="px-6 py-8 text-center text-gray-500">
+        No CI status available
+      </div>
+
+      <table v-else class="min-w-full divide-y divide-gray-200">
+        <thead class="bg-gray-50">
+          <tr>
+            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Repository</th>
+            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Run #</th>
+            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Chart Version</th>
+            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Completed</th>
+          </tr>
+        </thead>
+        <tbody class="bg-white divide-y divide-gray-200">
+          <tr v-for="repo in sortedRepos.filter(r => !r.Excluded)" :key="'ci-' + repo.ID">
+            <td class="px-6 py-4 whitespace-nowrap">
+              <span class="text-sm font-medium text-gray-900">{{ repo.RepoName }}</span>
+            </td>
+            <td class="px-6 py-4 whitespace-nowrap">
+              <span
+                v-if="ciStatuses.get(repo.ID)"
+                class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium"
+                :class="getCIStatusClass(ciStatuses.get(repo.ID)!.status)"
+              >
+                <span v-html="getCIStatusIcon(ciStatuses.get(repo.ID)!.status)" class="mr-1"></span>
+                {{ getCIStatusText(ciStatuses.get(repo.ID)!.status) }}
+              </span>
+              <span v-else class="text-sm text-gray-400">-</span>
+            </td>
+            <td class="px-6 py-4 whitespace-nowrap text-sm">
+              <a
+                v-if="ciStatuses.get(repo.ID)?.run_url"
+                :href="ciStatuses.get(repo.ID)!.run_url"
+                target="_blank"
+                class="text-indigo-600 hover:text-indigo-800"
+              >
+                #{{ ciStatuses.get(repo.ID)!.run_number }}
+              </a>
+              <span v-else class="text-gray-400">-</span>
+            </td>
+            <td class="px-6 py-4 whitespace-nowrap text-sm">
+              <span v-if="ciStatuses.get(repo.ID)?.chart_version" class="text-gray-900 font-mono">
+                {{ ciStatuses.get(repo.ID)!.chart_version }}
+              </span>
+              <span v-else class="text-gray-400">-</span>
+            </td>
+            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+              {{ ciStatuses.get(repo.ID) ? formatCITime(ciStatuses.get(repo.ID)!.completed_at) : '-' }}
             </td>
           </tr>
         </tbody>

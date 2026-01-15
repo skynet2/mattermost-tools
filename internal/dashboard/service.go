@@ -46,16 +46,18 @@ type ReleaseWithRepos struct {
 }
 
 type RepoData struct {
-	RepoName     string
-	CommitCount  int
-	Additions    int
-	Deletions    int
-	Contributors []string
-	PRNumber     int
-	PRURL        string
-	Summary      string
-	IsBreaking   bool
-	InfraChanges []string
+	RepoName       string
+	CommitCount    int
+	Additions      int
+	Deletions      int
+	Contributors   []string
+	PRNumber       int
+	PRURL          string
+	Summary        string
+	IsBreaking     bool
+	InfraChanges   []string
+	MergeCommitSHA string
+	HeadSHA        string
 }
 
 func (s *Service) CreateRelease(ctx context.Context, req CreateReleaseRequest) (*database.Release, error) {
@@ -99,15 +101,17 @@ func (s *Service) ListReleases(ctx context.Context, status string) ([]database.R
 func (s *Service) AddRepos(ctx context.Context, releaseID string, repos []RepoData) error {
 	for _, r := range repos {
 		repo := database.ReleaseRepo{
-			ReleaseID:   releaseID,
-			RepoName:    r.RepoName,
-			CommitCount: r.CommitCount,
-			Additions:   r.Additions,
-			Deletions:   r.Deletions,
-			PRNumber:    r.PRNumber,
-			PRURL:       r.PRURL,
-			Summary:     r.Summary,
-			IsBreaking:  r.IsBreaking,
+			ReleaseID:      releaseID,
+			RepoName:       r.RepoName,
+			CommitCount:    r.CommitCount,
+			Additions:      r.Additions,
+			Deletions:      r.Deletions,
+			PRNumber:       r.PRNumber,
+			PRURL:          r.PRURL,
+			Summary:        r.Summary,
+			IsBreaking:     r.IsBreaking,
+			MergeCommitSHA: r.MergeCommitSHA,
+			HeadSHA:        r.HeadSHA,
 		}
 		if err := repo.SetContributors(r.Contributors); err != nil {
 			return fmt.Errorf("setting contributors: %w", err)
@@ -258,6 +262,9 @@ type repoPreservedData struct {
 	ConfirmedAt int64
 	Excluded    bool
 	DependsOn   string
+	HeadSHA     string
+	Summary     string
+	IsBreaking  bool
 }
 
 func (s *Service) RefreshRepos(ctx context.Context, releaseID string, repos []RepoData) error {
@@ -273,6 +280,9 @@ func (s *Service) RefreshRepos(ctx context.Context, releaseID string, repos []Re
 			ConfirmedAt: repo.ConfirmedAt,
 			Excluded:    repo.Excluded,
 			DependsOn:   repo.DependsOn,
+			HeadSHA:     repo.HeadSHA,
+			Summary:     repo.Summary,
+			IsBreaking:  repo.IsBreaking,
 		}
 	}
 
@@ -281,16 +291,28 @@ func (s *Service) RefreshRepos(ctx context.Context, releaseID string, repos []Re
 	}
 
 	for _, r := range repos {
+		summary := r.Summary
+		isBreaking := r.IsBreaking
+
+		if preserved, exists := preservedData[r.RepoName]; exists {
+			if preserved.HeadSHA != "" && preserved.HeadSHA == r.HeadSHA && preserved.Summary != "" {
+				summary = preserved.Summary
+				isBreaking = preserved.IsBreaking
+			}
+		}
+
 		repo := database.ReleaseRepo{
-			ReleaseID:   releaseID,
-			RepoName:    r.RepoName,
-			CommitCount: r.CommitCount,
-			Additions:   r.Additions,
-			Deletions:   r.Deletions,
-			PRNumber:    r.PRNumber,
-			PRURL:       r.PRURL,
-			Summary:     r.Summary,
-			IsBreaking:  r.IsBreaking,
+			ReleaseID:      releaseID,
+			RepoName:       r.RepoName,
+			CommitCount:    r.CommitCount,
+			Additions:      r.Additions,
+			Deletions:      r.Deletions,
+			PRNumber:       r.PRNumber,
+			PRURL:          r.PRURL,
+			Summary:        summary,
+			IsBreaking:     isBreaking,
+			MergeCommitSHA: r.MergeCommitSHA,
+			HeadSHA:        r.HeadSHA,
 		}
 		if err := repo.SetContributors(r.Contributors); err != nil {
 			return fmt.Errorf("setting contributors: %w", err)
@@ -597,4 +619,79 @@ func (s *Service) GetHistory(ctx context.Context, releaseID string) ([]database.
 		return nil, fmt.Errorf("fetching history: %w", err)
 	}
 	return history, nil
+}
+
+func (s *Service) CreateOrUpdateCIStatus(ctx context.Context, status *database.RepoCIStatus) error {
+	var existing database.RepoCIStatus
+	err := s.db.WithContext(ctx).Where("release_repo_id = ?", status.ReleaseRepoID).First(&existing).Error
+	if err != nil && err != gorm.ErrRecordNotFound {
+		return fmt.Errorf("checking existing CI status: %w", err)
+	}
+
+	if err == gorm.ErrRecordNotFound {
+		if err := s.db.WithContext(ctx).Create(status).Error; err != nil {
+			return fmt.Errorf("creating CI status: %w", err)
+		}
+		return nil
+	}
+
+	status.ID = existing.ID
+	if err := s.db.WithContext(ctx).Save(status).Error; err != nil {
+		return fmt.Errorf("updating CI status: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) GetCIStatusByRepoID(ctx context.Context, releaseRepoID uint) (*database.RepoCIStatus, error) {
+	var status database.RepoCIStatus
+	err := s.db.WithContext(ctx).Where("release_repo_id = ?", releaseRepoID).First(&status).Error
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("getting CI status: %w", err)
+	}
+	return &status, nil
+}
+
+func (s *Service) GetIncompleteCIStatuses(ctx context.Context) ([]database.RepoCIStatus, error) {
+	var statuses []database.RepoCIStatus
+	err := s.db.WithContext(ctx).
+		Where("status NOT IN ?", []string{"success", "failure", "cancelled", "skipped"}).
+		Find(&statuses).Error
+	if err != nil {
+		return nil, fmt.Errorf("fetching incomplete CI statuses: %w", err)
+	}
+	return statuses, nil
+}
+
+func (s *Service) GetCIStatusesForRelease(ctx context.Context, releaseID string) ([]database.RepoCIStatus, error) {
+	var repos []database.ReleaseRepo
+	if err := s.db.WithContext(ctx).Where("release_id = ?", releaseID).Find(&repos).Error; err != nil {
+		return nil, fmt.Errorf("getting release repos: %w", err)
+	}
+
+	if len(repos) == 0 {
+		return nil, nil
+	}
+
+	repoIDs := make([]uint, len(repos))
+	for i, r := range repos {
+		repoIDs[i] = r.ID
+	}
+
+	var statuses []database.RepoCIStatus
+	err := s.db.WithContext(ctx).Where("release_repo_id IN ?", repoIDs).Find(&statuses).Error
+	if err != nil {
+		return nil, fmt.Errorf("fetching CI statuses: %w", err)
+	}
+	return statuses, nil
+}
+
+func (s *Service) GetReposByReleaseID(ctx context.Context, releaseID string) ([]database.ReleaseRepo, error) {
+	var repos []database.ReleaseRepo
+	if err := s.db.WithContext(ctx).Where("release_id = ?", releaseID).Find(&repos).Error; err != nil {
+		return nil, fmt.Errorf("getting release repos: %w", err)
+	}
+	return repos, nil
 }

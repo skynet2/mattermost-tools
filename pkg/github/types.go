@@ -24,8 +24,11 @@ type PullRequest struct {
 	HTMLURL            string    `json:"html_url"`
 	State              string    `json:"state"`
 	Draft              bool      `json:"draft"`
+	Merged             bool      `json:"merged"`
+	MergeCommitSHA     string    `json:"merge_commit_sha"`
 	CreatedAt          time.Time `json:"created_at"`
 	UpdatedAt          time.Time `json:"updated_at"`
+	MergedAt           time.Time `json:"merged_at"`
 	User               User      `json:"user"`
 	RequestedReviewers []User    `json:"requested_reviewers"`
 	RequestedTeams     []Team    `json:"requested_teams"`
@@ -69,4 +72,37 @@ type FileChange struct {
 	Additions int    `json:"additions"`
 	Deletions int    `json:"deletions"`
 	Changes   int    `json:"changes"`
+}
+
+type WorkflowRun struct {
+	ID           int64     `json:"id"`
+	Name         string    `json:"name"`
+	RunNumber    int       `json:"run_number"`
+	Status       string    `json:"status"`
+	Conclusion   string    `json:"conclusion"`
+	HTMLURL      string    `json:"html_url"`
+	HeadSHA      string    `json:"head_sha"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	RunStartedAt time.Time `json:"run_started_at"`
+}
+
+type WorkflowRunsResponse struct {
+	TotalCount   int           `json:"total_count"`
+	WorkflowRuns []WorkflowRun `json:"workflow_runs"`
+}
+
+type WorkflowJob struct {
+	ID          int64     `json:"id"`
+	RunID       int64     `json:"run_id"`
+	Name        string    `json:"name"`
+	Status      string    `json:"status"`
+	Conclusion  string    `json:"conclusion"`
+	StartedAt   time.Time `json:"started_at"`
+	CompletedAt time.Time `json:"completed_at"`
+}
+
+type WorkflowJobsResponse struct {
+	TotalCount int           `json:"total_count"`
+	Jobs       []WorkflowJob `json:"jobs"`
 }

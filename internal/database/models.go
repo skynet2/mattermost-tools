@@ -26,22 +26,24 @@ type Release struct {
 }
 
 type ReleaseRepo struct {
-	ID           uint   `gorm:"primaryKey;autoIncrement"`
-	ReleaseID    string `gorm:"not null;index"`
-	RepoName     string `gorm:"not null"`
-	CommitCount  int    `gorm:"default:0"`
-	Additions    int    `gorm:"default:0"`
-	Deletions    int    `gorm:"default:0"`
-	Contributors string
-	PRNumber     int
-	PRURL        string
-	Excluded     bool   `gorm:"default:false"`
-	DependsOn    string
-	Summary      string
-	IsBreaking   bool `gorm:"default:false"`
-	ConfirmedBy  string
-	ConfirmedAt  int64
-	InfraChanges string
+	ID             uint   `gorm:"primaryKey;autoIncrement"`
+	ReleaseID      string `gorm:"not null;index"`
+	RepoName       string `gorm:"not null"`
+	CommitCount    int    `gorm:"default:0"`
+	Additions      int    `gorm:"default:0"`
+	Deletions      int    `gorm:"default:0"`
+	Contributors   string
+	PRNumber       int
+	PRURL          string
+	Excluded       bool   `gorm:"default:false"`
+	DependsOn      string
+	Summary        string
+	IsBreaking     bool `gorm:"default:false"`
+	ConfirmedBy    string
+	ConfirmedAt    int64
+	InfraChanges   string
+	MergeCommitSHA string
+	HeadSHA        string
 }
 
 func (r *ReleaseRepo) GetContributors() ([]string, error) {
@@ -140,4 +142,18 @@ type ReleaseHistory struct {
 	Actor     string
 	Details   string
 	CreatedAt int64 `gorm:"not null;index"`
+}
+
+type RepoCIStatus struct {
+	ID             uint   `gorm:"primaryKey;autoIncrement"`
+	ReleaseRepoID  uint   `gorm:"uniqueIndex;not null"`
+	WorkflowRunID  int64
+	WorkflowRunNum int
+	WorkflowURL    string
+	Status         string `gorm:"default:pending"`
+	ChartVersion   string
+	MergeCommitSHA string
+	StartedAt      int64
+	CompletedAt    int64
+	LastCheckedAt  int64
 }

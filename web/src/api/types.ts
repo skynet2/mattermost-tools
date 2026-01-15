@@ -41,6 +41,7 @@ export interface ReleaseWithRepos {
   release: Release
   repos: ReleaseRepo[]
   org: string
+  ci_summary?: CISummary
 }
 
 export interface CreateReleaseResponse extends Release {
@@ -67,4 +68,28 @@ export interface HistoryEntry {
   Actor: string
   Details: string
   CreatedAt: number
+}
+
+export interface CIStatus {
+  repo_name: string
+  repo_id: number
+  status: string
+  run_number: number
+  run_url: string
+  chart_version: string
+  started_at: number
+  completed_at: number
+}
+
+export interface CIStatusResponse {
+  statuses: CIStatus[]
+  any_in_progress: boolean
+}
+
+export interface CISummary {
+  total: number
+  success: number
+  failed: number
+  in_progress: number
+  pending: number
 }
