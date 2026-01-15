@@ -701,3 +701,63 @@ func (s *Service) GetReposByReleaseID(ctx context.Context, releaseID string) ([]
 	}
 	return repos, nil
 }
+
+func (s *Service) CreateOrUpdateDeploymentStatus(ctx context.Context, status *database.RepoDeploymentStatus) error {
+	var existing database.RepoDeploymentStatus
+	err := s.db.WithContext(ctx).
+		Where("release_repo_id = ? AND environment = ?", status.ReleaseRepoID, status.Environment).
+		First(&existing).Error
+	if err != nil && err != gorm.ErrRecordNotFound {
+		return fmt.Errorf("checking existing deployment status: %w", err)
+	}
+
+	if err == gorm.ErrRecordNotFound {
+		if err := s.db.WithContext(ctx).Create(status).Error; err != nil {
+			return fmt.Errorf("creating deployment status: %w", err)
+		}
+		return nil
+	}
+
+	status.ID = existing.ID
+	if err := s.db.WithContext(ctx).Save(status).Error; err != nil {
+		return fmt.Errorf("updating deployment status: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) GetDeploymentStatusesForRelease(ctx context.Context, releaseID string) ([]database.RepoDeploymentStatus, error) {
+	var repos []database.ReleaseRepo
+	if err := s.db.WithContext(ctx).Where("release_id = ?", releaseID).Find(&repos).Error; err != nil {
+		return nil, fmt.Errorf("getting release repos: %w", err)
+	}
+
+	if len(repos) == 0 {
+		return nil, nil
+	}
+
+	repoIDs := make([]uint, len(repos))
+	for i, r := range repos {
+		repoIDs[i] = r.ID
+	}
+
+	var statuses []database.RepoDeploymentStatus
+	err := s.db.WithContext(ctx).Where("release_repo_id IN ?", repoIDs).Find(&statuses).Error
+	if err != nil {
+		return nil, fmt.Errorf("fetching deployment statuses: %w", err)
+	}
+	return statuses, nil
+}
+
+func (s *Service) GetDeploymentStatusByRepoIDAndEnv(ctx context.Context, releaseRepoID uint, env string) (*database.RepoDeploymentStatus, error) {
+	var status database.RepoDeploymentStatus
+	err := s.db.WithContext(ctx).
+		Where("release_repo_id = ? AND environment = ?", releaseRepoID, env).
+		First(&status).Error
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("getting deployment status: %w", err)
+	}
+	return &status, nil
+}

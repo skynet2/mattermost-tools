@@ -13,7 +13,7 @@ func NewSQLiteDB(path string) (*gorm.DB, error) {
 		return nil, fmt.Errorf("opening sqlite database: %w", err)
 	}
 
-	if err := db.AutoMigrate(&Release{}, &ReleaseRepo{}, &User{}, &ReleaseHistory{}, &RepoCIStatus{}); err != nil {
+	if err := db.AutoMigrate(&Release{}, &ReleaseRepo{}, &User{}, &ReleaseHistory{}, &RepoCIStatus{}, &RepoDeploymentStatus{}); err != nil {
 		return nil, fmt.Errorf("auto migrating: %w", err)
 	}
 

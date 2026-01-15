@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -40,6 +41,21 @@ type DashboardConfig struct {
 	BaseURL    string         `yaml:"base_url"`
 	SQLitePath string         `yaml:"sqlite_path"`
 	Keycloak   KeycloakConfig `yaml:"keycloak"`
+	ArgoCD     ArgoCDConfig   `yaml:"argocd"`
+}
+
+type ArgoCDConfig struct {
+	PollInterval time.Duration            `yaml:"poll_interval"`
+	CacheTTL     time.Duration            `yaml:"cache_ttl"`
+	Environments map[string]ArgoCDEnvConfig `yaml:"environments"`
+	Overrides    map[string]string        `yaml:"overrides"`
+}
+
+type ArgoCDEnvConfig struct {
+	URL            string `yaml:"url"`
+	CFClientID     string `yaml:"cf_client_id"`
+	CFClientSecret string `yaml:"cf_client_secret"`
+	AppSuffix      string `yaml:"app_suffix"`
 }
 
 type KeycloakConfig struct {

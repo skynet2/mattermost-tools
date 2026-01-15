@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { Release, ReleaseWithRepos, UserInfo, UserProfile, HistoryEntry, CreateReleaseResponse, CIStatusResponse } from './types'
+import type { Release, ReleaseWithRepos, UserInfo, UserProfile, HistoryEntry, CreateReleaseResponse, CIStatusResponse, DeploymentStatusListResponse } from './types'
 
 const api = axios.create({
   baseURL: '/api',
@@ -79,8 +79,13 @@ export const releaseApi = {
     return data
   },
 
-  refreshChartVersion: async (releaseId: string, repoId: number): Promise<{ chart_version: string }> => {
+  refreshChartVersion: async (releaseId: string, repoId: number): Promise<{ chart_name: string; chart_version: string }> => {
     const { data } = await api.post(`/releases/${releaseId}/repos/${repoId}/refresh-chart-version`)
+    return data
+  },
+
+  getDeploymentStatus: async (id: string): Promise<DeploymentStatusListResponse> => {
+    const { data } = await api.get(`/releases/${id}/deployment-status`)
     return data
   }
 }

@@ -140,6 +140,8 @@ func (s *Server) handleRelease(w http.ResponseWriter, r *http.Request) {
 				s.handlers.GetHistory(w, r)
 			} else if len(parts) > 1 && parts[1] == "ci-status" {
 				s.handlers.GetCIStatus(w, r)
+			} else if len(parts) > 1 && parts[1] == "deployment-status" {
+				s.handlers.GetDeploymentStatus(w, r)
 			} else {
 				s.handlers.GetRelease(w, r)
 			}
@@ -187,6 +189,10 @@ func (s *Server) Service() *Service {
 
 func (s *Server) SetCITracker(ciTracker *CITracker) {
 	s.handlers.SetCITracker(ciTracker)
+}
+
+func (s *Server) SetArgoCDTracker(tracker *ArgoCDTracker) {
+	s.handlers.SetArgoCDTracker(tracker)
 }
 
 func (s *Server) Handler() http.Handler {

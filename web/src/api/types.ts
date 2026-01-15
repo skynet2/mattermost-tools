@@ -96,3 +96,24 @@ export interface CISummary {
   in_progress: number
   pending: number
 }
+
+export interface EnvDeploymentStatus {
+  app_name: string
+  current_version: string
+  expected_version: string
+  sync_status: string
+  health_status: string
+  rollout_status: string
+  last_checked_at: number
+}
+
+export interface DeploymentStatusResponse {
+  repo_id: number
+  repo_name: string
+  environments: Record<string, EnvDeploymentStatus>
+}
+
+export interface DeploymentStatusListResponse {
+  statuses: DeploymentStatusResponse[]
+  any_pending: boolean
+}

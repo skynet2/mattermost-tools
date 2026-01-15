@@ -159,3 +159,20 @@ type RepoCIStatus struct {
 	CompletedAt    int64
 	LastCheckedAt  int64
 }
+
+type RepoDeploymentStatus struct {
+	ID              uint   `gorm:"primaryKey;autoIncrement"`
+	ReleaseRepoID   uint   `gorm:"uniqueIndex:idx_repo_env;not null"`
+	Environment     string `gorm:"uniqueIndex:idx_repo_env;not null"`
+	AppName         string
+	CurrentVersion  string
+	ExpectedVersion string
+	SyncStatus      string
+	HealthStatus    string
+	RolloutStatus   string
+	LastCheckedAt   int64
+}
+
+func (RepoDeploymentStatus) TableName() string {
+	return "repo_deployment_statuses"
+}

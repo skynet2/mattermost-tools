@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { releaseApi, authApi } from '@/api/client'
-import type { Release, ReleaseRepo, HistoryEntry, CIStatus } from '@/api/types'
+import type { Release, ReleaseRepo, HistoryEntry, CIStatus, DeploymentStatusResponse, EnvDeploymentStatus } from '@/api/types'
 
 const route = useRoute()
 const router = useRouter()
@@ -37,6 +37,11 @@ const ciLoading = ref(false)
 const anyInProgress = ref(false)
 const refreshingChartVersion = ref<number | null>(null)
 let ciRefreshTimeout: ReturnType<typeof setTimeout> | null = null
+
+const deploymentStatuses = ref<Map<number, DeploymentStatusResponse>>(new Map())
+const deploymentLoading = ref(false)
+const anyPendingDeployment = ref(false)
+let deploymentRefreshTimeout: ReturnType<typeof setTimeout> | null = null
 
 const releaseId = computed(() => route.params.id as string)
 
@@ -450,11 +455,12 @@ async function refreshChartVersion(repoId: number) {
     const result = await releaseApi.refreshChartVersion(releaseId.value, repoId)
     const status = ciStatuses.value.get(repoId)
     if (status) {
+      status.chart_name = result.chart_name
       status.chart_version = result.chart_version
       ciStatuses.value = new Map(ciStatuses.value)
     }
   } catch (error: any) {
-    alert(error.response?.data || 'Failed to refresh chart version')
+    alert(error.response?.data || 'Failed to refresh chart info')
   } finally {
     refreshingChartVersion.value = null
   }
@@ -517,6 +523,96 @@ function formatCITime(timestamp: number): string {
   if (diffMins < 60) return `${diffMins}m ago`
   if (diffHours < 24) return `${diffHours}h ago`
   return date.toLocaleDateString()
+}
+
+async function loadDeploymentStatus() {
+  deploymentLoading.value = true
+  try {
+    const response = await releaseApi.getDeploymentStatus(releaseId.value)
+    const statusMap = new Map<number, DeploymentStatusResponse>()
+    for (const status of response.statuses) {
+      statusMap.set(status.repo_id, status)
+    }
+    deploymentStatuses.value = statusMap
+    anyPendingDeployment.value = response.any_pending
+
+    if (response.any_pending) {
+      deploymentRefreshTimeout = setTimeout(loadDeploymentStatus, 15000)
+    }
+  } catch {
+    deploymentStatuses.value = new Map()
+    anyPendingDeployment.value = false
+  } finally {
+    deploymentLoading.value = false
+  }
+}
+
+function getDeploymentStatusIcon(env: EnvDeploymentStatus | undefined): string {
+  if (!env) return '&#8226;'
+  if (env.sync_status === 'Synced' && env.health_status === 'Healthy') {
+    return '&#10003;'
+  }
+  if (env.health_status === 'Progressing') {
+    return '&#9203;'
+  }
+  if (env.sync_status === 'OutOfSync') {
+    return '&#9888;'
+  }
+  if (env.health_status === 'Degraded') {
+    return '&#10007;'
+  }
+  if (env.health_status === 'Missing') {
+    return '&#8987;'
+  }
+  return '&#8226;'
+}
+
+function getDeploymentStatusClass(env: EnvDeploymentStatus | undefined): string {
+  if (!env) return 'text-gray-400 bg-gray-50'
+  if (env.sync_status === 'Synced' && env.health_status === 'Healthy') {
+    return 'text-green-600 bg-green-100'
+  }
+  if (env.health_status === 'Progressing') {
+    return 'text-yellow-600 bg-yellow-100'
+  }
+  if (env.sync_status === 'OutOfSync') {
+    return 'text-orange-600 bg-orange-100'
+  }
+  if (env.health_status === 'Degraded') {
+    return 'text-red-600 bg-red-100'
+  }
+  if (env.health_status === 'Missing') {
+    return 'text-gray-600 bg-gray-100'
+  }
+  return 'text-gray-400 bg-gray-50'
+}
+
+function getDeploymentStatusTooltip(env: EnvDeploymentStatus | undefined): string {
+  if (!env) return 'Not configured'
+  const parts = []
+  parts.push(`Sync: ${env.sync_status}`)
+  parts.push(`Health: ${env.health_status}`)
+  if (env.current_version) {
+    parts.push(`Current: ${env.current_version}`)
+  }
+  if (env.expected_version && env.current_version !== env.expected_version) {
+    parts.push(`Expected: ${env.expected_version}`)
+  }
+  return parts.join(' | ')
+}
+
+function getDeploymentEnv(repoId: number, envName: string): EnvDeploymentStatus | undefined {
+  const status = deploymentStatuses.value.get(repoId)
+  return status?.environments?.[envName]
+}
+
+function parseRolloutStatus(env: EnvDeploymentStatus | undefined): { replicas: number; ready: number; updated: number } | null {
+  if (!env?.rollout_status) return null
+  try {
+    return JSON.parse(env.rollout_status)
+  } catch {
+    return null
+  }
 }
 
 async function handleConfirmClick(repo: ReleaseRepo) {
@@ -617,7 +713,7 @@ function handleClickOutside(event: MouseEvent) {
 
 onMounted(async () => {
   document.addEventListener('click', handleClickOutside)
-  await Promise.all([loadRelease(), loadMyGitHub(), loadCIStatus()])
+  await Promise.all([loadRelease(), loadMyGitHub(), loadCIStatus(), loadDeploymentStatus()])
 
   if (route.query.syncing === '1') {
     syncing.value = true
@@ -653,6 +749,10 @@ onUnmounted(() => {
   if (ciRefreshTimeout) {
     clearTimeout(ciRefreshTimeout)
     ciRefreshTimeout = null
+  }
+  if (deploymentRefreshTimeout) {
+    clearTimeout(deploymentRefreshTimeout)
+    deploymentRefreshTimeout = null
   }
 })
 </script>
@@ -1237,7 +1337,7 @@ onUnmounted(() => {
             <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Repository</th>
             <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
             <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Run #</th>
-            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Chart Version</th>
+            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Chart</th>
             <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Completed</th>
           </tr>
         </thead>
@@ -1270,16 +1370,21 @@ onUnmounted(() => {
             </td>
             <td class="px-6 py-4 whitespace-nowrap text-sm">
               <div class="flex items-center gap-2">
-                <span v-if="ciStatuses.get(repo.ID)?.chart_version" class="text-gray-900 font-mono">
-                  {{ ciStatuses.get(repo.ID)!.chart_version }}
-                </span>
+                <div v-if="ciStatuses.get(repo.ID)?.chart_version">
+                  <div v-if="ciStatuses.get(repo.ID)?.chart_name" class="text-gray-600 text-xs">
+                    {{ ciStatuses.get(repo.ID)!.chart_name }}
+                  </div>
+                  <div class="text-gray-900 font-mono">
+                    v{{ ciStatuses.get(repo.ID)!.chart_version }}
+                  </div>
+                </div>
                 <span v-else class="text-gray-400">-</span>
                 <button
                   v-if="ciStatuses.get(repo.ID)?.status === 'success' && !ciStatuses.get(repo.ID)?.chart_version"
                   @click="refreshChartVersion(repo.ID)"
                   :disabled="refreshingChartVersion === repo.ID"
                   class="inline-flex items-center p-1 text-gray-400 hover:text-indigo-600 disabled:opacity-50"
-                  title="Parse chart version from job logs"
+                  title="Parse chart info from job logs"
                 >
                   <svg class="w-4 h-4" :class="{ 'animate-spin': refreshingChartVersion === repo.ID }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
@@ -1289,6 +1394,105 @@ onUnmounted(() => {
             </td>
             <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
               {{ ciStatuses.get(repo.ID) ? formatCITime(ciStatuses.get(repo.ID)!.completed_at) : '-' }}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Deployment Status Section -->
+    <div class="bg-white shadow-sm rounded-lg ring-1 ring-gray-200 overflow-hidden">
+      <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+        <div class="flex items-center">
+          <svg class="w-5 h-5 text-gray-400 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+          </svg>
+          <h2 class="text-lg font-medium text-gray-900">Deployment Status</h2>
+          <span v-if="anyPendingDeployment" class="ml-3 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800">
+            <span class="animate-pulse mr-1">&#9679;</span> Auto-refreshing
+          </span>
+        </div>
+        <button
+          @click="loadDeploymentStatus"
+          :disabled="deploymentLoading"
+          class="inline-flex items-center px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded disabled:opacity-50"
+        >
+          <svg class="w-4 h-4 mr-1" :class="{ 'animate-spin': deploymentLoading }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+          Refresh
+        </button>
+      </div>
+
+      <div v-if="deploymentLoading && deploymentStatuses.size === 0" class="flex items-center justify-center py-8">
+        <div class="animate-spin rounded-full h-6 w-6 border-b-2 border-indigo-600"></div>
+      </div>
+
+      <div v-else-if="deploymentStatuses.size === 0" class="px-6 py-8 text-center text-gray-500">
+        No deployment status available
+      </div>
+
+      <table v-else class="min-w-full divide-y divide-gray-200">
+        <thead class="bg-gray-50">
+          <tr>
+            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Repository</th>
+            <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">QA</th>
+            <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">UAT</th>
+            <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Prod</th>
+          </tr>
+        </thead>
+        <tbody class="bg-white divide-y divide-gray-200">
+          <tr v-for="repo in sortedRepos.filter(r => !r.Excluded)" :key="'deploy-' + repo.ID">
+            <td class="px-6 py-4 whitespace-nowrap">
+              <span class="text-sm font-medium text-gray-900">{{ repo.RepoName }}</span>
+            </td>
+            <td class="px-6 py-4 whitespace-nowrap text-center">
+              <span
+                class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium"
+                :class="getDeploymentStatusClass(getDeploymentEnv(repo.ID, 'qa'))"
+                :title="getDeploymentStatusTooltip(getDeploymentEnv(repo.ID, 'qa'))"
+              >
+                <span v-html="getDeploymentStatusIcon(getDeploymentEnv(repo.ID, 'qa'))" class="mr-1"></span>
+                <span v-if="getDeploymentEnv(repo.ID, 'qa')?.current_version" class="font-mono">
+                  {{ getDeploymentEnv(repo.ID, 'qa')?.current_version }}
+                </span>
+                <span v-else>-</span>
+              </span>
+              <div v-if="parseRolloutStatus(getDeploymentEnv(repo.ID, 'qa'))" class="text-xs text-gray-500 mt-1">
+                {{ parseRolloutStatus(getDeploymentEnv(repo.ID, 'qa'))?.ready }}/{{ parseRolloutStatus(getDeploymentEnv(repo.ID, 'qa'))?.replicas }} ready
+              </div>
+            </td>
+            <td class="px-6 py-4 whitespace-nowrap text-center">
+              <span
+                class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium"
+                :class="getDeploymentStatusClass(getDeploymentEnv(repo.ID, 'uat'))"
+                :title="getDeploymentStatusTooltip(getDeploymentEnv(repo.ID, 'uat'))"
+              >
+                <span v-html="getDeploymentStatusIcon(getDeploymentEnv(repo.ID, 'uat'))" class="mr-1"></span>
+                <span v-if="getDeploymentEnv(repo.ID, 'uat')?.current_version" class="font-mono">
+                  {{ getDeploymentEnv(repo.ID, 'uat')?.current_version }}
+                </span>
+                <span v-else>-</span>
+              </span>
+              <div v-if="parseRolloutStatus(getDeploymentEnv(repo.ID, 'uat'))" class="text-xs text-gray-500 mt-1">
+                {{ parseRolloutStatus(getDeploymentEnv(repo.ID, 'uat'))?.ready }}/{{ parseRolloutStatus(getDeploymentEnv(repo.ID, 'uat'))?.replicas }} ready
+              </div>
+            </td>
+            <td class="px-6 py-4 whitespace-nowrap text-center">
+              <span
+                class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium"
+                :class="getDeploymentStatusClass(getDeploymentEnv(repo.ID, 'prod'))"
+                :title="getDeploymentStatusTooltip(getDeploymentEnv(repo.ID, 'prod'))"
+              >
+                <span v-html="getDeploymentStatusIcon(getDeploymentEnv(repo.ID, 'prod'))" class="mr-1"></span>
+                <span v-if="getDeploymentEnv(repo.ID, 'prod')?.current_version" class="font-mono">
+                  {{ getDeploymentEnv(repo.ID, 'prod')?.current_version }}
+                </span>
+                <span v-else>-</span>
+              </span>
+              <div v-if="parseRolloutStatus(getDeploymentEnv(repo.ID, 'prod'))" class="text-xs text-gray-500 mt-1">
+                {{ parseRolloutStatus(getDeploymentEnv(repo.ID, 'prod'))?.ready }}/{{ parseRolloutStatus(getDeploymentEnv(repo.ID, 'prod'))?.replicas }} ready
+              </div>
             </td>
           </tr>
         </tbody>

@@ -193,6 +193,14 @@ func runServe(cmd *cobra.Command, args []string) error {
 		log.Info().Msg("CI tracker started")
 	}
 
+	var argocdTracker *dashboard.ArgoCDTracker
+	if dashboardServer != nil && len(cfg.Serve.Dashboard.ArgoCD.Environments) > 0 {
+		argocdTracker = dashboard.NewArgoCDTracker(dashboardServer.Service(), &cfg.Serve.Dashboard.ArgoCD)
+		dashboardServer.SetArgoCDTracker(argocdTracker)
+		argocdTracker.Start()
+		log.Info().Msg("ArgoCD tracker started")
+	}
+
 	allowedTokens := make(map[string]struct{})
 	for _, t := range cfg.Serve.AllowedTokens {
 		allowedTokens[t] = struct{}{}
@@ -280,6 +288,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 	log.Info().Msg("Shutting down server")
 	if ciTracker != nil {
 		ciTracker.Stop()
+	}
+	if argocdTracker != nil {
+		argocdTracker.Stop()
 	}
 	if wsClient != nil {
 		wsClient.Close()

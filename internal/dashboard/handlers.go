@@ -19,14 +19,15 @@ import (
 )
 
 type Handlers struct {
-	service      *Service
-	auth         *Auth
-	ghClient     *github.Client
-	org          string
-	ignoredRepos map[string]struct{}
-	mmBot        *mattermost.Bot
-	baseURL      string
-	ciTracker    *CITracker
+	service       *Service
+	auth          *Auth
+	ghClient      *github.Client
+	org           string
+	ignoredRepos  map[string]struct{}
+	mmBot         *mattermost.Bot
+	baseURL       string
+	ciTracker     *CITracker
+	argocdTracker *ArgoCDTracker
 }
 
 func NewHandlers(service *Service, auth *Auth, ghClient *github.Client, org string, ignoredRepos map[string]struct{}, mmBot *mattermost.Bot, baseURL string) *Handlers {
@@ -43,6 +44,10 @@ func NewHandlers(service *Service, auth *Auth, ghClient *github.Client, org stri
 
 func (h *Handlers) SetCITracker(ciTracker *CITracker) {
 	h.ciTracker = ciTracker
+}
+
+func (h *Handlers) SetArgoCDTracker(tracker *ArgoCDTracker) {
+	h.argocdTracker = tracker
 }
 
 func (h *Handlers) ListReleases(w http.ResponseWriter, r *http.Request) {
@@ -1101,5 +1106,84 @@ func (h *Handlers) RefreshChartVersion(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, map[string]string{
 		"chart_name":    chartName,
 		"chart_version": chartVersion,
+	})
+}
+
+type DeploymentStatusResponse struct {
+	RepoID       uint                           `json:"repo_id"`
+	RepoName     string                         `json:"repo_name"`
+	Environments map[string]EnvDeploymentStatus `json:"environments"`
+}
+
+type EnvDeploymentStatus struct {
+	AppName         string `json:"app_name"`
+	CurrentVersion  string `json:"current_version"`
+	ExpectedVersion string `json:"expected_version"`
+	SyncStatus      string `json:"sync_status"`
+	HealthStatus    string `json:"health_status"`
+	RolloutStatus   string `json:"rollout_status"`
+	LastCheckedAt   int64  `json:"last_checked_at"`
+}
+
+func (h *Handlers) GetDeploymentStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	path := strings.TrimPrefix(r.URL.Path, "/api/releases/")
+	parts := strings.Split(path, "/")
+	if len(parts) < 2 {
+		http.Error(w, "Invalid path", http.StatusBadRequest)
+		return
+	}
+	releaseID := parts[0]
+
+	if h.argocdTracker == nil {
+		respondJSON(w, map[string]interface{}{
+			"statuses":    []DeploymentStatusResponse{},
+			"any_pending": false,
+		})
+		return
+	}
+
+	statuses, anyPending := h.argocdTracker.GetCachedDeploymentStatuses(r.Context(), releaseID)
+
+	repos, _ := h.service.GetReposByReleaseID(r.Context(), releaseID)
+	repoNames := make(map[uint]string)
+	for _, repo := range repos {
+		repoNames[repo.ID] = repo.RepoName
+	}
+
+	repoStatusMap := make(map[uint]*DeploymentStatusResponse)
+	for _, s := range statuses {
+		resp, exists := repoStatusMap[s.ReleaseRepoID]
+		if !exists {
+			resp = &DeploymentStatusResponse{
+				RepoID:       s.ReleaseRepoID,
+				RepoName:     repoNames[s.ReleaseRepoID],
+				Environments: make(map[string]EnvDeploymentStatus),
+			}
+			repoStatusMap[s.ReleaseRepoID] = resp
+		}
+		resp.Environments[s.Environment] = EnvDeploymentStatus{
+			AppName:         s.AppName,
+			CurrentVersion:  s.CurrentVersion,
+			ExpectedVersion: s.ExpectedVersion,
+			SyncStatus:      s.SyncStatus,
+			HealthStatus:    s.HealthStatus,
+			RolloutStatus:   s.RolloutStatus,
+			LastCheckedAt:   s.LastCheckedAt,
+		}
+	}
+
+	responseStatuses := make([]DeploymentStatusResponse, 0, len(repoStatusMap))
+	for _, resp := range repoStatusMap {
+		responseStatuses = append(responseStatuses, *resp)
+	}
+
+	respondJSON(w, map[string]interface{}{
+		"statuses":    responseStatuses,
+		"any_pending": anyPending,
 	})
 }
