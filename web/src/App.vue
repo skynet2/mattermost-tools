@@ -88,7 +88,7 @@ async function saveProfile() {
     <footer class="border-t border-gray-200 bg-white mt-auto">
       <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
         <p class="text-center text-sm text-gray-400">
-          Crafted with care by
+          Crafted with <span class="text-red-400">♥</span> by
           <a href="https://claude.ai" target="_blank" class="text-indigo-500 hover:text-indigo-600">Claude</a>
         </p>
       </div>

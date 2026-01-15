@@ -29,6 +29,8 @@ const historyExpanded = ref(false)
 const historyLoading = ref(false)
 const expandedHistoryEntries = ref<Set<number>>(new Set())
 const openDependencyDropdown = ref<number | null>(null)
+const syncing = ref(false)
+let syncInterval: ReturnType<typeof setInterval> | null = null
 
 const releaseId = computed(() => route.params.id as string)
 
@@ -147,7 +149,8 @@ function formatDate(timestamp: number) {
 function getDependsOn(repo: ReleaseRepo): string[] {
   if (!repo.DependsOn) return []
   try {
-    return JSON.parse(repo.DependsOn)
+    const parsed = JSON.parse(repo.DependsOn)
+    return Array.isArray(parsed) ? parsed : []
   } catch {
     return []
   }
@@ -162,7 +165,8 @@ function getOtherRepoNames(currentRepo: ReleaseRepo): string[] {
 function getContributors(repo: ReleaseRepo): string[] {
   if (!repo.Contributors) return []
   try {
-    return JSON.parse(repo.Contributors)
+    const parsed = JSON.parse(repo.Contributors)
+    return Array.isArray(parsed) ? parsed : []
   } catch {
     return []
   }
@@ -171,7 +175,8 @@ function getContributors(repo: ReleaseRepo): string[] {
 function getConfirmedBy(repo: ReleaseRepo): string[] {
   if (!repo.ConfirmedBy) return []
   try {
-    return JSON.parse(repo.ConfirmedBy)
+    const parsed = JSON.parse(repo.ConfirmedBy)
+    return Array.isArray(parsed) ? parsed : []
   } catch {
     return []
   }
@@ -230,7 +235,8 @@ const totalNonExcludedRepos = computed(() => {
 function getInfraChanges(repo: ReleaseRepo): string[] {
   if (!repo.InfraChanges) return []
   try {
-    return JSON.parse(repo.InfraChanges)
+    const parsed = JSON.parse(repo.InfraChanges)
+    return Array.isArray(parsed) ? parsed : []
   } catch {
     return []
   }
@@ -337,6 +343,8 @@ function formatHistoryAction(entry: HistoryEntry): string {
       return 'Sent reminder to participants'
     case 'release_created':
       return 'Created release'
+    case 'repos_synced':
+      return `Synced ${details.count || ''} repositories`
     default:
       return entry.Action.replace(/_/g, ' ')
   }
@@ -369,6 +377,8 @@ function getHistoryIcon(action: string): string {
       return '🔔'
     case 'release_created':
       return '🚀'
+    case 'repos_synced':
+      return '📦'
     default:
       return '•'
   }
@@ -505,10 +515,38 @@ function handleClickOutside(event: MouseEvent) {
 onMounted(async () => {
   document.addEventListener('click', handleClickOutside)
   await Promise.all([loadRelease(), loadMyGitHub()])
+
+  if (route.query.syncing === '1') {
+    syncing.value = true
+    router.replace({ query: {} })
+
+    syncInterval = setInterval(async () => {
+      await loadRelease()
+      if (repos.value.length > 0) {
+        syncing.value = false
+        if (syncInterval) {
+          clearInterval(syncInterval)
+          syncInterval = null
+        }
+      }
+    }, 3000)
+
+    setTimeout(() => {
+      if (syncInterval) {
+        clearInterval(syncInterval)
+        syncInterval = null
+        syncing.value = false
+      }
+    }, 60000)
+  }
 })
 
 onUnmounted(() => {
   document.removeEventListener('click', handleClickOutside)
+  if (syncInterval) {
+    clearInterval(syncInterval)
+    syncInterval = null
+  }
 })
 </script>
 
@@ -518,6 +556,15 @@ onUnmounted(() => {
   </div>
 
   <div v-else-if="release" class="space-y-6">
+    <!-- Syncing Banner -->
+    <div v-if="syncing" class="bg-blue-50 border border-blue-200 rounded-lg p-4 flex items-center gap-3">
+      <div class="animate-spin rounded-full h-5 w-5 border-2 border-blue-600 border-t-transparent"></div>
+      <div>
+        <p class="text-sm font-medium text-blue-800">Fetching repositories from GitHub...</p>
+        <p class="text-xs text-blue-600">This may take a few moments. The page will update automatically.</p>
+      </div>
+    </div>
+
     <!-- Header -->
     <div class="flex items-start justify-between">
       <div>

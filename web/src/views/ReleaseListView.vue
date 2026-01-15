@@ -31,7 +31,10 @@ async function createRelease() {
     showCreateModal.value = false
     sourceBranch.value = ''
     destBranch.value = ''
-    router.push(`/releases/${release.ID}`)
+    router.push({
+      path: `/releases/${release.ID}`,
+      query: release.syncing ? { syncing: '1' } : {}
+    })
   } catch (error: any) {
     alert(error.response?.data || 'Failed to create release')
   } finally {

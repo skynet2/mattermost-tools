@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -21,6 +22,7 @@ import (
 	"github.com/user/mattermost-tools/internal/config"
 	"github.com/user/mattermost-tools/internal/dashboard"
 	"github.com/user/mattermost-tools/internal/database"
+	"github.com/user/mattermost-tools/internal/logger"
 	"github.com/user/mattermost-tools/internal/mappings"
 	"github.com/user/mattermost-tools/pkg/github"
 	"github.com/user/mattermost-tools/pkg/mattermost"
@@ -75,6 +77,9 @@ func parsePRURL(url string) (owner, repo, number string, ok bool) {
 }
 
 func runServe(cmd *cobra.Command, args []string) error {
+	log := logger.Get()
+	logger.SetDebug(debug)
+
 	cfg, err := config.Load(configFile)
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("loading config: %w", err)
@@ -102,7 +107,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("initializing database: %w", err)
 		}
-		fmt.Fprintf(os.Stderr, "Dashboard database: %s\n", sqlitePath)
+		log.Info().Str("path", sqlitePath).Msg("Dashboard database initialized")
 	}
 
 	listenPort := port
@@ -152,7 +157,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("initializing dashboard server: %w", err)
 		}
-		fmt.Fprintf(os.Stderr, "Dashboard enabled at %s\n", cfg.Serve.Dashboard.BaseURL)
+		log.Info().Str("url", cfg.Serve.Dashboard.BaseURL).Msg("Dashboard enabled")
 	}
 
 	var wsClient *mattermost.WebSocketClient
@@ -209,15 +214,14 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 
 	go func() {
-		fmt.Fprintf(os.Stderr, "Starting server on 127.0.0.1:%d...\n", listenPort)
-		if debug {
-			fmt.Fprintf(os.Stderr, "Debug mode: ENABLED\n")
-		}
-		fmt.Fprintf(os.Stderr, "Allowed tokens: %d configured\n", len(allowedTokens))
-		fmt.Fprintf(os.Stderr, "Bot configured: %v\n", mmBot != nil)
-		fmt.Fprintf(os.Stderr, "Endpoints: /summarize-pr, /reviews, /changes, /bot-mention, /health\n")
+		log.Info().
+			Int("port", listenPort).
+			Bool("debug", debug).
+			Int("allowed_tokens", len(allowedTokens)).
+			Bool("bot_configured", mmBot != nil).
+			Msg("Starting server")
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			fmt.Fprintf(os.Stderr, "Server error: %v\n", err)
+			log.Error().Err(err).Msg("Server error")
 		}
 	}()
 
@@ -226,18 +230,17 @@ func runServe(cmd *cobra.Command, args []string) error {
 			for {
 				ctx := context.Background()
 				if err := wsClient.Connect(ctx); err != nil {
-					fmt.Fprintf(os.Stderr, "WebSocket connection failed: %v\n", err)
-					fmt.Fprintf(os.Stderr, "Retrying in 5 seconds...\n")
+					log.Error().Err(err).Msg("WebSocket connection failed, retrying in 5 seconds")
 					time.Sleep(5 * time.Second)
 					wsClient = mattermost.NewWebSocketClient(cfg.Serve.MattermostURL, cfg.Serve.MattermostToken)
 					if debug {
 						wsClient.SetDebugLog(func(format string, args ...interface{}) {
-							debugLog("[WS] "+format, args...)
+							log.Debug().Msgf("[WS] "+format, args...)
 						})
 					}
 					continue
 				}
-				fmt.Fprintf(os.Stderr, "WebSocket connected - listening for bot mentions\n")
+				log.Info().Msg("WebSocket connected - listening for bot mentions")
 
 				wsClient.OnMessage(func(event *mattermost.WebSocketEvent) {
 					if event.Event != "posted" {
@@ -247,13 +250,12 @@ func runServe(cmd *cobra.Command, args []string) error {
 				})
 
 				if err := wsClient.Listen(ctx); err != nil {
-					fmt.Fprintf(os.Stderr, "WebSocket error: %v\n", err)
-					fmt.Fprintf(os.Stderr, "Reconnecting in 5 seconds...\n")
+					log.Error().Err(err).Msg("WebSocket error, reconnecting in 5 seconds")
 					time.Sleep(5 * time.Second)
 					wsClient = mattermost.NewWebSocketClient(cfg.Serve.MattermostURL, cfg.Serve.MattermostToken)
 					if debug {
 						wsClient.SetDebugLog(func(format string, args ...interface{}) {
-							debugLog("[WS] "+format, args...)
+							log.Debug().Msgf("[WS] "+format, args...)
 						})
 					}
 					continue
@@ -267,7 +269,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	fmt.Fprintf(os.Stderr, "Shutting down server...\n")
+	log.Info().Msg("Shutting down server")
 	if wsClient != nil {
 		wsClient.Close()
 	}
@@ -1198,43 +1200,63 @@ func processReleasePRsAsync(ghClient *github.Client, org string, ignoredRepos ma
 
 func processCreateReleaseAsync(dashboardSvc *dashboard.Service, ghClient *github.Client, org string, ignoredRepos map[string]struct{}, mmBot *mattermost.Bot, baseURL, channelID, threadID, userName, sourceBranch, destBranch string) {
 	ctx := context.Background()
+	log := logger.Get()
+
+	log.Info().
+		Str("user", userName).
+		Str("source", sourceBranch).
+		Str("dest", destBranch).
+		Str("channel", channelID).
+		Msg("Creating release")
 
 	ownerUser, err := mmBot.GetUserByUsername(ctx, userName)
 	if err != nil || ownerUser == nil {
-		mmBot.PostMessageInThread(ctx, channelID, threadID, fmt.Sprintf("Failed to find user @%s\n\n_Requested by @%s_", userName, userName))
+		log.Error().Err(err).Str("user", userName).Msg("Failed to find user")
+		mmBot.PostMessageInThread(ctx, channelID, threadID, "Failed to find user @"+userName+"\n\n_Requested by @"+userName+"_")
 		return
 	}
 
-	release, err := dashboardSvc.CreateRelease(ctx, dashboard.CreateReleaseRequest{
+	rel, err := dashboardSvc.CreateRelease(ctx, dashboard.CreateReleaseRequest{
 		SourceBranch: sourceBranch,
 		DestBranch:   destBranch,
 		CreatedBy:    ownerUser.ID,
 		ChannelID:    channelID,
 	})
 	if err != nil {
-		mmBot.PostMessageInThread(ctx, channelID, threadID, fmt.Sprintf("Failed to create release: %v\n\n_Requested by @%s_", err, userName))
+		log.Error().Err(err).Msg("Failed to create release")
+		mmBot.PostMessageInThread(ctx, channelID, threadID, "Failed to create release: "+err.Error()+"\n\n_Requested by @"+userName+"_")
 		return
 	}
+
+	log.Info().Str("release_id", rel.ID).Msg("Release created, gathering repo data")
 
 	repos, err := gatherRepoData(ctx, ghClient, org, ignoredRepos, sourceBranch, destBranch)
 	if err != nil {
-		mmBot.PostMessageInThread(ctx, channelID, threadID, fmt.Sprintf("Failed to gather repos: %v\n\n_Requested by @%s_", err, userName))
+		log.Error().Err(err).Str("release_id", rel.ID).Msg("Failed to gather repos")
+		mmBot.PostMessageInThread(ctx, channelID, threadID, "Failed to gather repos: "+err.Error()+"\n\n_Requested by @"+userName+"_")
 		return
 	}
 
-	if err := dashboardSvc.AddRepos(ctx, release.ID, repos); err != nil {
-		mmBot.PostMessageInThread(ctx, channelID, threadID, fmt.Sprintf("Failed to add repos: %v\n\n_Requested by @%s_", err, userName))
+	log.Info().Str("release_id", rel.ID).Int("repo_count", len(repos)).Msg("Repos gathered, saving to database")
+
+	if err := dashboardSvc.AddRepos(ctx, rel.ID, repos); err != nil {
+		log.Error().Err(err).Str("release_id", rel.ID).Msg("Failed to add repos")
+		mmBot.PostMessageInThread(ctx, channelID, threadID, "Failed to add repos: "+err.Error()+"\n\n_Requested by @"+userName+"_")
 		return
 	}
 
-	releaseURL := fmt.Sprintf("%s/releases/%s", baseURL, release.ID)
-	message := fmt.Sprintf("## Release: `%s` → `%s`\n**Repositories:** %d\n[View Dashboard](%s)\n\n_Requested by @%s_",
-		sourceBranch, destBranch, len(repos), releaseURL, userName)
+	releaseURL := baseURL + "/releases/" + rel.ID
+	message := "## Release: `" + sourceBranch + "` → `" + destBranch + "`\n**Repositories:** " +
+		strconv.Itoa(len(repos)) + "\n[View Dashboard](" + releaseURL + ")\n\n_Requested by @" + userName + "_"
 
-	postID, err := mmBot.PostMessageWithID(ctx, channelID, message)
-	if err == nil && postID != "" {
-		dashboardSvc.SetMattermostPostID(ctx, release.ID, postID)
+	log.Info().Str("release_id", rel.ID).Str("url", releaseURL).Msg("Posting release message")
+
+	if err := mmBot.PostMessageInThread(ctx, channelID, threadID, message); err != nil {
+		log.Error().Err(err).Msg("Failed to post message")
 	}
+
+	dashboardSvc.SetMattermostPostID(ctx, rel.ID, threadID)
+	log.Info().Str("release_id", rel.ID).Msg("Release creation complete")
 }
 
 func gatherRepoData(ctx context.Context, ghClient *github.Client, org string, ignoredRepos map[string]struct{}, sourceBranch, destBranch string) ([]dashboard.RepoData, error) {
@@ -1325,6 +1347,9 @@ func processRefreshReleaseAsync(releaseManager *release.Manager, mmBot *mattermo
 }
 
 func generateChangeSummary(repoName string, compare *github.CompareResult) (string, bool) {
+	log := logger.Get()
+	log.Debug().Str("repo", repoName).Int("commits", compare.TotalCommits).Msg("Generating AI summary")
+
 	var commitInfo strings.Builder
 	commitInfo.WriteString(fmt.Sprintf("Repository: %s\n", repoName))
 	commitInfo.WriteString(fmt.Sprintf("Total commits: %d\n\n", compare.TotalCommits))
@@ -1347,12 +1372,20 @@ Otherwise just provide the summary directly.
 
 %s`, commitInfo.String())
 
-	cmd := exec.Command("claude", "-p", prompt)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "claude", "-p", prompt)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			log.Warn().Str("repo", repoName).Msg("AI summary timed out")
+		} else {
+			log.Warn().Str("repo", repoName).Err(err).Msg("AI summary failed")
+		}
 		return fmt.Sprintf("%d commits (AI summary unavailable)", compare.TotalCommits), false
 	}
 
@@ -1365,6 +1398,7 @@ Otherwise just provide the summary directly.
 		summary = strings.TrimSpace(summary)
 	}
 
+	log.Debug().Str("repo", repoName).Bool("breaking", isBreaking).Msg("AI summary complete")
 	return summary, isBreaking
 }
 

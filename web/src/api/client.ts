@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { Release, ReleaseWithRepos, UserInfo, UserProfile, HistoryEntry } from './types'
+import type { Release, ReleaseWithRepos, UserInfo, UserProfile, HistoryEntry, CreateReleaseResponse } from './types'
 
 const api = axios.create({
   baseURL: '/api',
@@ -23,7 +23,7 @@ export const releaseApi = {
     return data
   },
 
-  create: async (sourceBranch: string, destBranch: string): Promise<Release> => {
+  create: async (sourceBranch: string, destBranch: string): Promise<CreateReleaseResponse> => {
     const { data } = await api.post('/releases', { source_branch: sourceBranch, dest_branch: destBranch })
     return data
   },

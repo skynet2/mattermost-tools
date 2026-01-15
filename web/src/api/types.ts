@@ -43,6 +43,10 @@ export interface ReleaseWithRepos {
   org: string
 }
 
+export interface CreateReleaseResponse extends Release {
+  syncing?: boolean
+}
+
 export interface UserInfo {
   sub: string
   preferred_username: string

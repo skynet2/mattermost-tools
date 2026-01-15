@@ -12,6 +12,8 @@ import (
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/gorilla/sessions"
 	"golang.org/x/oauth2"
+
+	"github.com/user/mattermost-tools/internal/logger"
 )
 
 type AuthConfig struct {
@@ -51,11 +53,19 @@ func NewAuth(ctx context.Context, cfg AuthConfig, sessionSecret []byte) (*Auth, 
 
 	verifier := provider.Verifier(&oidc.Config{ClientID: cfg.ClientID})
 
+	store := sessions.NewCookieStore(sessionSecret)
+	store.Options = &sessions.Options{
+		Path:     "/",
+		MaxAge:   86400 * 7, // 7 days
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	}
+
 	return &Auth{
 		provider:     provider,
 		oauth2Config: oauth2Config,
 		verifier:     verifier,
-		store:        sessions.NewCookieStore(sessionSecret),
+		store:        store,
 	}, nil
 }
 
@@ -72,7 +82,12 @@ func (a *Auth) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	session, _ := a.store.Get(r, "auth-session")
 	savedState, ok := session.Values["state"].(string)
 	if !ok || savedState != r.URL.Query().Get("state") {
-		http.Error(w, "Invalid state", http.StatusBadRequest)
+		logger.Warn().
+			Bool("state_found", ok).
+			Str("saved_state", savedState).
+			Str("received_state", r.URL.Query().Get("state")).
+			Msg("OAuth state mismatch, redirecting to login")
+		http.Redirect(w, r, "/auth/login", http.StatusFound)
 		return
 	}
 

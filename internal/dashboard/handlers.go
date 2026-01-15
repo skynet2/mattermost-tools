@@ -87,13 +87,26 @@ func (h *Handlers) CreateRelease(w http.ResponseWriter, r *http.Request) {
 	})
 
 	if h.ghClient != nil {
-		repos, err := h.gatherRepoData(r.Context(), req.SourceBranch, req.DestBranch)
-		if err == nil && len(repos) > 0 {
-			h.service.RefreshRepos(r.Context(), release.ID, repos)
-		}
+		go func() {
+			ctx := context.Background()
+			repos, err := h.gatherRepoData(ctx, req.SourceBranch, req.DestBranch)
+			if err == nil && len(repos) > 0 {
+				h.service.RefreshRepos(ctx, release.ID, repos)
+				h.service.RecordHistory(ctx, release.ID, "repos_synced", "system", map[string]any{
+					"count": len(repos),
+				})
+			}
+		}()
 	}
 
-	respondJSON(w, release)
+	respondJSON(w, map[string]any{
+		"ID":           release.ID,
+		"SourceBranch": release.SourceBranch,
+		"DestBranch":   release.DestBranch,
+		"Status":       release.Status,
+		"CreatedAt":    release.CreatedAt,
+		"syncing":      h.ghClient != nil,
+	})
 }
 
 func (h *Handlers) GetRelease(w http.ResponseWriter, r *http.Request) {
