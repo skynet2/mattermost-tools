@@ -48,6 +48,38 @@ serve:
       client_secret: "your-client-secret"
       redirect_url: "https://releases.example.com/auth/callback"
 
+    # ArgoCD integration settings (optional - for deployment tracking)
+    # Tracks deployment status across environments after CI succeeds
+    argocd:
+      poll_interval: 30s      # how often to check deployment status
+      cache_ttl: 10s          # cache duration for API responses
+
+      # Environment configurations
+      # Each environment maps to an ArgoCD instance
+      environments:
+        qa:
+          url: "https://argocd-qa.example.com"
+          cf_client_id: "cloudflare-access-client-id"
+          cf_client_secret: "cloudflare-access-client-secret"
+          app_suffix: "-qa"    # repo-name + suffix = ArgoCD app name
+        uat:
+          url: "https://argocd-uat.example.com"
+          cf_client_id: "cloudflare-access-client-id"
+          cf_client_secret: "cloudflare-access-client-secret"
+          app_suffix: "-uat"
+        prod:
+          url: "https://argocd.example.com"
+          cf_client_id: "cloudflare-access-client-id"
+          cf_client_secret: "cloudflare-access-client-secret"
+          app_suffix: "-master"
+
+      # Optional: Override app name resolution for specific repos
+      # By default: repo-name + env.app_suffix = ArgoCD app name
+      # Use this when a repo's ArgoCD app has a different naming convention
+      overrides:
+        special-repo: "custom-app-name"           # applies to all envs
+        another-repo-qa: "specific-qa-app-name"   # applies to qa only
+
   # Per-command permissions (optional)
   # If a command is listed here, only the specified users can use it
   # If a command is not listed, all users can use it

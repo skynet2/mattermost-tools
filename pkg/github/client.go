@@ -213,7 +213,7 @@ func (c *Client) GetPRComments(ctx context.Context, owner, repo, number string) 
 }
 
 func (c *Client) FindPullRequest(ctx context.Context, owner, repo, head, base string) (*PullRequest, error) {
-	url := fmt.Sprintf("%s/repos/%s/%s/pulls?state=all&head=%s:%s&base=%s", c.baseURL, owner, repo, owner, head, base)
+	url := fmt.Sprintf("%s/repos/%s/%s/pulls?state=open&head=%s:%s&base=%s", c.baseURL, owner, repo, owner, head, base)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)

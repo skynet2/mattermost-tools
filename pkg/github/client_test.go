@@ -129,3 +129,133 @@ func TestClient_ListPullRequests_Success(t *testing.T) {
 	require.Len(t, prs[0].RequestedReviewers, 2)
 	require.True(t, prs[1].Draft)
 }
+
+func TestClient_FindPullRequest_Success(t *testing.T) {
+	type tc struct {
+		name   string
+		owner  string
+		repo   string
+		head   string
+		base   string
+		prNum  int
+		prURL  string
+	}
+
+	cases := []tc{
+		{
+			name:  "finds open PR",
+			owner: "org",
+			repo:  "repo",
+			head:  "develop",
+			base:  "main",
+			prNum: 42,
+			prURL: "https://github.com/org/repo/pull/42",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			responseBody := `[{"number": 42, "html_url": "https://github.com/org/repo/pull/42", "state": "open"}]`
+
+			mockHTTP := mocks.NewMockHTTPDoer(ctrl)
+			mockHTTP.EXPECT().
+				Do(gomock.Any()).
+				DoAndReturn(func(req *http.Request) (*http.Response, error) {
+					require.Equal(t, "https://api.github.com/repos/org/repo/pulls?state=open&head=org:develop&base=main", req.URL.String())
+					require.Equal(t, "Bearer test-token", req.Header.Get("Authorization"))
+					return &http.Response{
+						StatusCode: 200,
+						Body:       io.NopCloser(strings.NewReader(responseBody)),
+					}, nil
+				})
+
+			client := github.NewClientWithHTTP("test-token", mockHTTP)
+			pr, err := client.FindPullRequest(context.Background(), c.owner, c.repo, c.head, c.base)
+
+			require.NoError(t, err)
+			require.NotNil(t, pr)
+			require.Equal(t, c.prNum, pr.Number)
+			require.Equal(t, c.prURL, pr.HTMLURL)
+		})
+	}
+}
+
+func TestClient_FindPullRequest_NoPRFound(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockHTTP := mocks.NewMockHTTPDoer(ctrl)
+	mockHTTP.EXPECT().
+		Do(gomock.Any()).
+		DoAndReturn(func(req *http.Request) (*http.Response, error) {
+			require.Contains(t, req.URL.String(), "state=open")
+			return &http.Response{
+				StatusCode: 200,
+				Body:       io.NopCloser(strings.NewReader(`[]`)),
+			}, nil
+		})
+
+	client := github.NewClientWithHTTP("test-token", mockHTTP)
+	pr, err := client.FindPullRequest(context.Background(), "org", "repo", "feature", "main")
+
+	require.NoError(t, err)
+	require.Nil(t, pr)
+}
+
+func TestClient_FindPullRequest_UsesStateOpen(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockHTTP := mocks.NewMockHTTPDoer(ctrl)
+	mockHTTP.EXPECT().
+		Do(gomock.Any()).
+		DoAndReturn(func(req *http.Request) (*http.Response, error) {
+			require.Contains(t, req.URL.String(), "state=open", "must use state=open to avoid returning merged PRs")
+			require.NotContains(t, req.URL.String(), "state=all", "must not use state=all which returns old merged PRs")
+			return &http.Response{
+				StatusCode: 200,
+				Body:       io.NopCloser(strings.NewReader(`[]`)),
+			}, nil
+		})
+
+	client := github.NewClientWithHTTP("test-token", mockHTTP)
+	_, _ = client.FindPullRequest(context.Background(), "org", "repo", "develop", "main")
+}
+
+func TestClient_FindPullRequest_Failure(t *testing.T) {
+	type tc struct {
+		name       string
+		statusCode int
+		errContain string
+	}
+
+	cases := []tc{
+		{name: "API error 404", statusCode: 404, errContain: "404"},
+		{name: "API error 500", statusCode: 500, errContain: "500"},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockHTTP := mocks.NewMockHTTPDoer(ctrl)
+			mockHTTP.EXPECT().
+				Do(gomock.Any()).
+				Return(&http.Response{
+					StatusCode: c.statusCode,
+					Body:       io.NopCloser(strings.NewReader(`{}`)),
+				}, nil)
+
+			client := github.NewClientWithHTTP("test-token", mockHTTP)
+			pr, err := client.FindPullRequest(context.Background(), "org", "repo", "develop", "main")
+
+			require.Error(t, err)
+			require.Contains(t, err.Error(), c.errContain)
+			require.Nil(t, pr)
+		})
+	}
+}

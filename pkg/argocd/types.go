@@ -1,13 +1,10 @@
 package argocd
 
 type AppStatus struct {
-	Name            string
-	SyncStatus      string
-	HealthStatus    string
-	CurrentVersion  string
-	Replicas        int
-	ReadyReplicas   int
-	UpdatedReplicas int
+	Name           string
+	SyncStatus     string
+	HealthStatus   string
+	CurrentVersion string
 }
 
 type applicationResponse struct {

@@ -199,6 +199,10 @@ func runServe(cmd *cobra.Command, args []string) error {
 		dashboardServer.SetArgoCDTracker(argocdTracker)
 		argocdTracker.Start()
 		log.Info().Msg("ArgoCD tracker started")
+
+		if ciTracker != nil {
+			ciTracker.OnCISuccess(argocdTracker.InitDeploymentTrackingForRepo)
+		}
 	}
 
 	allowedTokens := make(map[string]struct{})

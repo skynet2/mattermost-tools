@@ -21,18 +21,21 @@ type ciCache struct {
 	fetching  bool
 }
 
+type CISuccessCallback func(ctx context.Context, releaseID string, repoID uint)
+
 type CITracker struct {
-	service   *Service
-	ghClient  *github.Client
-	org       string
-	interval  time.Duration
-	cacheTTL  time.Duration
-	stopCh    chan struct{}
-	wg        sync.WaitGroup
-	cache     map[string]*ciCache
-	cacheMu   sync.RWMutex
-	fetchLock map[string]*sync.Mutex
-	fetchMu   sync.Mutex
+	service           *Service
+	ghClient          *github.Client
+	org               string
+	interval          time.Duration
+	cacheTTL          time.Duration
+	stopCh            chan struct{}
+	wg                sync.WaitGroup
+	cache             map[string]*ciCache
+	cacheMu           sync.RWMutex
+	fetchLock         map[string]*sync.Mutex
+	fetchMu           sync.Mutex
+	onCISuccessFunc   CISuccessCallback
 }
 
 func NewCITracker(service *Service, ghClient *github.Client, org string, interval time.Duration) *CITracker {
@@ -59,6 +62,10 @@ func (t *CITracker) Start() {
 func (t *CITracker) Stop() {
 	close(t.stopCh)
 	t.wg.Wait()
+}
+
+func (t *CITracker) OnCISuccess(fn CISuccessCallback) {
+	t.onCISuccessFunc = fn
 }
 
 func (t *CITracker) run() {
@@ -131,6 +138,9 @@ func (t *CITracker) updateCIStatus(ctx context.Context, status *database.RepoCIS
 		return
 	}
 
+	prevStatus := status.Status
+	prevChartVersion := status.ChartVersion
+
 	status.Status = mapWorkflowStatus(run.Status, run.Conclusion)
 	status.LastCheckedAt = time.Now().Unix()
 
@@ -143,6 +153,13 @@ func (t *CITracker) updateCIStatus(ctx context.Context, status *database.RepoCIS
 
 	if err := t.service.CreateOrUpdateCIStatus(ctx, status); err != nil {
 		log.Error().Err(err).Uint("repo_id", status.ReleaseRepoID).Msg("Failed to update CI status")
+		return
+	}
+
+	isNewSuccess := status.Status == "success" && status.ChartVersion != "" &&
+		(prevStatus != "success" || prevChartVersion == "")
+	if isNewSuccess && t.onCISuccessFunc != nil {
+		t.onCISuccessFunc(ctx, repo.ReleaseID, repo.ID)
 	}
 }
 

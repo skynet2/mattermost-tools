@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 )
 
 //go:generate mockgen -destination=mocks/http_doer_mock.go -package=mocks github.com/user/mattermost-tools/pkg/argocd HTTPDoer
@@ -22,7 +23,9 @@ type Client struct {
 
 func NewClient(baseURL, cfClientID, cfClientSecret string) *Client {
 	return &Client{
-		httpClient:     &http.Client{},
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+		},
 		baseURL:        baseURL,
 		cfClientID:     cfClientID,
 		cfClientSecret: cfClientSecret,

@@ -104,27 +104,21 @@ func (t *ArgoCDTracker) checkPendingDeployments() {
 
 	log.Debug().Int("count", len(repos)).Msg("Checking deployment statuses for repos with successful CI")
 
+	updatedReleases := make(map[string]struct{})
 	for i := range repos {
 		t.updateDeploymentStatus(ctx, &repos[i])
+		updatedReleases[repos[i].ReleaseID] = struct{}{}
 	}
 
 	t.cacheMu.Lock()
-	t.cache = make(map[string]*deploymentCache)
+	for releaseID := range updatedReleases {
+		delete(t.cache, releaseID)
+	}
 	t.cacheMu.Unlock()
 }
 
 func (t *ArgoCDTracker) getReposWithSuccessfulCI(ctx context.Context) ([]database.ReleaseRepo, error) {
-	var repos []database.ReleaseRepo
-	err := t.service.db.WithContext(ctx).
-		Joins("INNER JOIN repo_ci_statuses ON repo_ci_statuses.release_repo_id = release_repos.id").
-		Where("repo_ci_statuses.status = ?", "success").
-		Where("repo_ci_statuses.chart_version != ''").
-		Where("release_repos.excluded = ?", false).
-		Find(&repos).Error
-	if err != nil {
-		return nil, err
-	}
-	return repos, nil
+	return t.service.GetReposWithSuccessfulCI(ctx)
 }
 
 func (t *ArgoCDTracker) updateDeploymentStatus(ctx context.Context, repo *database.ReleaseRepo) {
@@ -288,6 +282,46 @@ func (t *ArgoCDTracker) InvalidateCache(releaseID string) {
 	t.cacheMu.Lock()
 	delete(t.cache, releaseID)
 	t.cacheMu.Unlock()
+}
+
+func (t *ArgoCDTracker) InitDeploymentTrackingForRepo(ctx context.Context, releaseID string, repoID uint) {
+	log := logger.Get()
+
+	repo, err := t.service.GetRepo(ctx, repoID)
+	if err != nil {
+		log.Error().Err(err).Uint("repo_id", repoID).Msg("Failed to get repo for deployment tracking")
+		return
+	}
+
+	if repo.Excluded {
+		return
+	}
+
+	ciStatus, err := t.service.GetCIStatusByRepoID(ctx, repoID)
+	if err != nil || ciStatus == nil || ciStatus.ChartVersion == "" {
+		return
+	}
+
+	for envName := range t.clients {
+		appName := t.resolveAppName(repo.RepoName, envName)
+
+		status := &database.RepoDeploymentStatus{
+			ReleaseRepoID:   repoID,
+			Environment:     envName,
+			AppName:         appName,
+			ExpectedVersion: ciStatus.ChartVersion,
+			RolloutStatus:   "pending",
+			LastCheckedAt:   time.Now().Unix(),
+		}
+
+		if err := t.service.CreateOrUpdateDeploymentStatus(ctx, status); err != nil {
+			log.Error().Err(err).Str("repo", repo.RepoName).Str("env", envName).Msg("Failed to create deployment status")
+			continue
+		}
+	}
+
+	t.InvalidateCache(releaseID)
+	log.Info().Str("repo", repo.RepoName).Str("version", ciStatus.ChartVersion).Msg("Initialized deployment tracking for repo")
 }
 
 func (t *ArgoCDTracker) InitDeploymentTracking(ctx context.Context, releaseID string) error {

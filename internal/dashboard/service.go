@@ -761,3 +761,17 @@ func (s *Service) GetDeploymentStatusByRepoIDAndEnv(ctx context.Context, release
 	}
 	return &status, nil
 }
+
+func (s *Service) GetReposWithSuccessfulCI(ctx context.Context) ([]database.ReleaseRepo, error) {
+	var repos []database.ReleaseRepo
+	err := s.db.WithContext(ctx).
+		Joins("INNER JOIN repo_ci_statuses ON repo_ci_statuses.release_repo_id = release_repos.id").
+		Where("repo_ci_statuses.status = ?", "success").
+		Where("repo_ci_statuses.chart_version != ''").
+		Where("release_repos.excluded = ?", false).
+		Find(&repos).Error
+	if err != nil {
+		return nil, fmt.Errorf("getting repos with successful CI: %w", err)
+	}
+	return repos, nil
+}
